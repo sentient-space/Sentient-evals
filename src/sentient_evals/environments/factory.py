@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .base import BaseEnvironment, EnvironmentConfig, EnvironmentType
+
+
+@dataclass(frozen=True)
+class EnvironmentFactoryConfig:
+    env_type: EnvironmentType
+    docker_image_tag_prefix: str = "sentient-evals"
+    daytona_snapshot_template: str | None = None
+    daytona_network_block_all: bool | None = None
+    extra: dict[str, Any] | None = None
+
+
+class EnvironmentFactory:
+    @staticmethod
+    def create(
+        *,
+        env_type: EnvironmentType,
+        trial_id: str,
+        workspace_dir: Path,
+        logs_dir: Path,
+        cfg: EnvironmentConfig,
+        task_environment_dir: Path | None = None,
+        task_files_dir: Path | None = None,
+        task_digest: str | None = None,
+        container_image: str | None = None,
+        docker_image_tag_prefix: str = "sentient-evals",
+        daytona_snapshot_template: str | None = None,
+        daytona_network_block_all: bool | None = None,
+    ) -> BaseEnvironment:
+        if env_type == EnvironmentType.local_python:
+            from .local_python import LocalPythonEnvironment
+
+            return LocalPythonEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                task_files_dir=task_files_dir,
+            )
+
+        if env_type in (EnvironmentType.docker_cli, EnvironmentType.podman_cli):
+            from .docker_cli import DockerCLIEnvironment
+
+            return DockerCLIEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                engine="docker" if env_type == EnvironmentType.docker_cli else "podman",
+                environment_dir=task_environment_dir,
+                task_digest=task_digest,
+                image_tag_prefix=docker_image_tag_prefix,
+            )
+
+        if env_type == EnvironmentType.docker_sdk:
+            from .docker_sdk import DockerSDKEnvironment
+
+            return DockerSDKEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                environment_dir=task_environment_dir,
+                task_digest=task_digest,
+                image_tag_prefix=docker_image_tag_prefix,
+            )
+
+        if env_type == EnvironmentType.daytona:
+            from .daytona import DaytonaEnvironment
+
+            return DaytonaEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                environment_dir=task_environment_dir,
+                task_digest=task_digest,
+                image=container_image,
+                snapshot_template_name=daytona_snapshot_template,
+                network_block_all=daytona_network_block_all,
+            )
+
+        raise ValueError(f"Unsupported environment type: {env_type}")
+

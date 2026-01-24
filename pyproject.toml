@@ -1,0 +1,46 @@
+[project]
+name = "sentient-evals"
+version = "0.0.1"
+description = "Universal evaluation harness for AI agents (local + embeddable)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Sentient", email = "oss@sentient.ai" }]
+dependencies = [
+  "pydantic>=2.7",
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+llm = [
+  "litellm>=1.50",
+]
+docker = [
+  "docker",
+]
+daytona = [
+  "daytona",
+]
+
+[project.scripts]
+sentient-evals = "sentient_evals.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentient_evals"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-q"]
+
