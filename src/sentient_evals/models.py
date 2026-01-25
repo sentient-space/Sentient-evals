@@ -114,6 +114,7 @@ class TrialResult(BaseModel):
     started_at: datetime
     finished_at: datetime = Field(default_factory=utcnow)
     transcript_path: str | None = None
+    trajectory_path: str | None = None
     outcome_path: str | None = None
     graders: list[GraderResult] = Field(default_factory=list)
     error: str | None = None

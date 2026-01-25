@@ -4,6 +4,17 @@ import json
 from pathlib import Path
 
 from . import __version__
+from .atif.models import (
+    AgentSchema,
+    FinalMetricsSchema,
+    MetricsSchema,
+    ObservationResultSchema,
+    ObservationSchema,
+    StepSchema,
+    SubagentTrajectoryRefSchema,
+    ToolCallSchema as AtifToolCallSchema,
+    TrajectorySchema,
+)
 from .models import (
     GraderResult,
     JudgeSpec,
@@ -37,6 +48,15 @@ SCHEMA_MODELS = {
     "RunConfigFile": RunConfigFile,
     "RunResult": RunResult,
     "RunSummary": RunSummary,
+    "ATIF_Trajectory": TrajectorySchema,
+    "ATIF_Step": StepSchema,
+    "ATIF_ToolCall": AtifToolCallSchema,
+    "ATIF_Observation": ObservationSchema,
+    "ATIF_ObservationResult": ObservationResultSchema,
+    "ATIF_SubagentTrajectoryRef": SubagentTrajectoryRefSchema,
+    "ATIF_Metrics": MetricsSchema,
+    "ATIF_FinalMetrics": FinalMetricsSchema,
+    "ATIF_Agent": AgentSchema,
 }
 
 

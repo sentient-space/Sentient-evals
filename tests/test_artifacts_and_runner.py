@@ -5,6 +5,7 @@ from pathlib import Path
 from sentient_evals.artifacts import ArtifactWriter, TrialArtifacts
 from sentient_evals.env import ExecResult, ToolExecutor
 from sentient_evals.graders import ExactMatchGrader
+from sentient_evals.atif.converters import transcript_to_trajectory
 from sentient_evals.models import GraderResult, Outcome, SuiteConfig, Task, TranscriptEvent
 from sentient_evals.runner import RunConfig, run_suite, run_suite_bundles
 from sentient_evals.replay import RecordingToolExecutor, ReplayingToolExecutor
@@ -45,6 +46,7 @@ def test_run_suite_writes_result(tmp_path: Path):
     assert (tmp_path / "r1" / "result.json").exists()
     assert (tmp_path / "r1" / "trials" / "t1__0" / "judge").is_dir()
     assert (tmp_path / "r1" / "trials" / "t1__0" / "verifier").is_dir()
+    assert (tmp_path / "r1" / "trials" / "t1__0" / "trajectory.json").exists()
 
 
 class ArtifactWritingGrader:
@@ -116,6 +118,26 @@ def test_tool_record_replay_roundtrip(tmp_path: Path):
     rep = ReplayingToolExecutor(log_path=log, strict=True)
     out2 = asyncio.run(rep.exec("echo hi"))
     assert out2.stdout == "ran:echo hi"
+
+
+def test_metrics_custom_fields_are_preserved_in_atif():
+    transcript = [
+        TranscriptEvent(
+            kind="metric",
+            metrics={"workflow_steps": 1.0, "prompt_tokens": 3},
+            content="route=default",
+        )
+    ]
+    trajectory = transcript_to_trajectory(
+        transcript,
+        session_id="s1",
+        agent_name="test",
+        agent_version="0.0.0",
+    )
+    metrics = trajectory.steps[0].metrics
+    assert metrics is not None
+    assert metrics.prompt_tokens == 3
+    assert metrics.extra == {"workflow_steps": 1.0}
 
 
 def test_resume_skips_completed_trials(tmp_path: Path):

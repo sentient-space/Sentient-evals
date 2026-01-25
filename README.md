@@ -5,7 +5,7 @@
 ## Goals
 
 - Run **tasks** concurrently with **multiple trials** to reduce variance.
-- Capture **transcripts** (a.k.a. traces/trajectories) and **outcomes** (final environment state).
+- Capture **trajectories (ATIF)** and **outcomes** (final environment state).
 - Support **code-based graders** (tests, static checks, tool-call verification) and **model-based graders** (LLM-as-judge, multi-judge voting + calibration).
 - Produce a **Harbor-style jobs directory** for debuggability.
 - Keep the core harness framework-agnostic; integrate frameworks via adapters.
@@ -63,7 +63,7 @@ By default, results are written under `jobs/<run_id>/`:
 - `jobs/<run_id>/config.json`
 - `jobs/<run_id>/result.json`
 - `jobs/<run_id>/trials/<trial_id>/config.json`
-- `jobs/<run_id>/trials/<trial_id>/transcript.jsonl`
+- `jobs/<run_id>/trials/<trial_id>/trajectory.json`
 - `jobs/<run_id>/trials/<trial_id>/outcome.json`
 - `jobs/<run_id>/trials/<trial_id>/result.json`
 - `jobs/<run_id>/trials/<trial_id>/judge/` (optional judge artifacts)
@@ -80,7 +80,7 @@ jobs/my-run-2025-01-20/
 └── trials/
     └── task1__0/
         ├── config.json            # Trial configuration (seed, adapter, etc.)
-        ├── transcript.jsonl       # Message/tool-call events (one per line)
+        ├── trajectory.json        # ATIF trajectory (full run)
         ├── outcome.json           # Final environment state snapshot
         ├── result.json            # Trial-level grader results
         ├── judge/                 # LLM judge artifacts (when using LLM graders)

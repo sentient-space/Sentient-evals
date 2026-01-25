@@ -113,6 +113,18 @@
       "title": "Task Id",
       "type": "string"
     },
+    "trajectory_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trajectory Path"
+    },
     "transcript_path": {
       "anyOf": [
         {

@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Sequence
+
+from sentient_evals.atif.models import (
+    AgentSchema,
+    MetricsSchema,
+    ObservationResultSchema,
+    ObservationSchema,
+    StepSchema,
+    ToolCallSchema,
+    TrajectorySchema,
+)
+from sentient_evals.models import TranscriptEvent
+
+
+def _stringify(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return str(value)
+
+
+def _source_from_role(role: str | None) -> str:
+    if role == "assistant":
+        return "agent"
+    if role == "user":
+        return "user"
+    return "system"
+
+
+def _build_metrics(payload: dict[str, Any]) -> MetricsSchema:
+    known_fields = set(MetricsSchema.model_fields.keys())
+    known: dict[str, Any] = {}
+    extra: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in known_fields and key != "extra":
+            known[key] = value
+        else:
+            extra[key] = value
+    existing_extra = payload.get("extra")
+    if isinstance(existing_extra, dict):
+        extra = {**existing_extra, **extra}
+    if extra:
+        known["extra"] = extra
+    return MetricsSchema(**known)
+
+
+def transcript_to_trajectory(
+    transcript: Sequence[TranscriptEvent],
+    *,
+    session_id: str,
+    agent_name: str,
+    agent_version: str,
+    model_name: str | None = None,
+    tool_definitions: list[dict[str, Any]] | None = None,
+    notes: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> TrajectorySchema:
+    steps: list[StepSchema] = []
+    for idx, ev in enumerate(transcript, start=1):
+        timestamp = ev.t.isoformat() if ev.t else None
+        metrics = _build_metrics(ev.metrics) if ev.metrics else None
+        if ev.kind == "message":
+            steps.append(
+                StepSchema(
+                    step_id=idx,
+                    timestamp=timestamp,
+                    source=_source_from_role(ev.role),
+                    model_name=model_name,
+                    message=ev.content or "",
+                    metrics=metrics,
+                )
+            )
+            continue
+
+        if ev.kind == "tool_call" and ev.tool_call is not None:
+            call_id = f"call-{idx}"
+            tool_call = ToolCallSchema(
+                tool_call_id=call_id,
+                function_name=ev.tool_call.name,
+                arguments=ev.tool_call.args or {},
+            )
+            observation = None
+            if ev.observation is not None:
+                observation = ObservationSchema(
+                    results=[
+                        ObservationResultSchema(
+                            source_call_id=call_id, content=_stringify(ev.observation)
+                        )
+                    ]
+                )
+            steps.append(
+                StepSchema(
+                    step_id=idx,
+                    timestamp=timestamp,
+                    source="agent",
+                    model_name=model_name,
+                    message=ev.content or f"Tool call {ev.tool_call.name}",
+                    tool_calls=[tool_call],
+                    observation=observation,
+                    metrics=metrics,
+                )
+            )
+            continue
+
+        if ev.kind == "observation":
+            observation = ObservationSchema(
+                results=[ObservationResultSchema(content=_stringify(ev.observation))]
+            )
+            steps.append(
+                StepSchema(
+                    step_id=idx,
+                    timestamp=timestamp,
+                    source="system",
+                    model_name=model_name,
+                    message=ev.content or "observation",
+                    observation=observation,
+                    metrics=metrics,
+                )
+            )
+            continue
+
+        if ev.kind == "metric":
+            steps.append(
+                StepSchema(
+                    step_id=idx,
+                    timestamp=timestamp,
+                    source="system",
+                    model_name=model_name,
+                    message=ev.content or "metric",
+                    metrics=metrics,
+                )
+            )
+            continue
+
+        steps.append(
+            StepSchema(
+                step_id=idx,
+                timestamp=timestamp,
+                source="system",
+                model_name=model_name,
+                message=ev.content or "",
+                metrics=metrics,
+            )
+        )
+
+    agent = AgentSchema(
+        name=agent_name,
+        version=agent_version,
+        model_name=model_name,
+        tool_definitions=tool_definitions,
+    )
+    return TrajectorySchema(
+        session_id=session_id,
+        agent=agent,
+        steps=steps,
+        notes=notes,
+        extra=extra,
+    )

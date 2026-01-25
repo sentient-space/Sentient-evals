@@ -22,6 +22,15 @@ docker = [
 daytona = [
   "daytona",
 ]
+langchain = [
+  "langchain-core",
+]
+crewai = [
+  "crewai",
+]
+autogen = [
+  "pyautogen",
+]
 
 [project.scripts]
 sentient-evals = "sentient_evals.cli:app"

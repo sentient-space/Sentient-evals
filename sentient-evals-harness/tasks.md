@@ -87,13 +87,13 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
 
 - [x] 2. Job/trial filesystem format + result writer (Harbor-style)
   - Implemented canonical run-level `config.json` + `result.json` (replaces run/summary).
-  - Trials now guarantee `config.json`, `result.json`, `transcript.jsonl`, `outcome.json` plus `judge/` and `verifier/` dirs; graders receive an artifact sink to write judge/verifier outputs.
+  - Trials now guarantee `config.json`, `result.json`, `trajectory.json`, `outcome.json` plus `judge/` and `verifier/` dirs; graders receive an artifact sink to write judge/verifier outputs.
   - Artifact writer uses atomic writes; schemas exported include `RunConfigFile`.
   - Standard on-disk layout (`jobs/<run_id>/...`) for local runs
   - Trial subfolders include:
     - `config.json` (trial config)
     - `result.json` (grader outputs + metrics)
-    - `transcript.jsonl` (messages/tool calls)
+    - `trajectory.json` (ATIF trajectory)
     - `outcome.json` (final state snapshot pointer + summaries)
   - Optional: `verifier/` folder outputs for deterministic graders (tests, stdout/stderr, rewards)
   - Add `judge/` folder for model-based graders (judge prompt, raw judge outputs, disagreement summaries)
@@ -122,11 +122,14 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
     - **CLI integration**: `--tasks-dir` for task bundles, `--env` for backend selection, backend-specific flags (`--docker-image-tag-prefix`, `--daytona-snapshot-template`).
     - **Security defaults**: Untrusted task posture with capability dropping, network isolation, resource caps, and documented boundaries in README.
 
-- [ ] 5. Agent adapters
-  - Minimal adapter interface: `run(task_input, tools, env) -> transcript, outcome`
-  - Built-in adapters for common patterns (raw chat loop; tool-calling loop)
-  - Optional integrations: LangChain, CrewAI, AutoGen (behind extras)
-  - Add a “workflow adapter” interface for non-agent orchestrations (routing/chaining/voting) so they can be evaluated consistently
+- [x] 5. Agent adapters
+  - Minimal adapter interface: `AgentAdapter.run(task, seed, env: ToolExecutor) -> transcript, outcome`
+  - **ATIF v1.5 trajectory output**: Trials now write `trajectory.json` (ATIF) as the canonical trace artifact (converted from `TranscriptEvent[]`), with custom metrics preserved under `metrics.extra`.
+  - Built-in adapters for common patterns:
+    - **Installed/CLI base**: `BaseInstalledAdapter` runs one-or-more `exec` commands (with optional `install`) and has a stdout-first fallback transcript.
+    - **Workflow adapter interface**: `WorkflowAdapter` protocol plus a `WorkflowStubAdapter` demonstrating workflow metadata via `TranscriptEvent(kind="metric")`.
+  - Optional integrations (behind extras): LangChain, CrewAI, AutoGen
+    - Implemented as **thin wrappers** that delegate framework-specific wiring to a user-supplied factory/runner, while recording tool usage via a shared `ToolExecutorRecorder`.
 
 - [ ] 6. Graders (baseline set)
   - Code-based:
