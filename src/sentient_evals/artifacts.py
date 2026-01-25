@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from .atif.models import TrajectorySchema
 from .models import Outcome, TranscriptEvent, TrialConfig, TrialResult
 
 
@@ -48,6 +49,11 @@ class ArtifactWriter:
                 f.write(e.model_dump_json())
                 f.write("\n")
         tmp.replace(p)
+        return p
+
+    def write_trajectory(self, trial_id: str, trajectory: TrajectorySchema) -> Path:
+        p = self.trial_dir(trial_id) / "trajectory.json"
+        _atomic_write_text(p, trajectory.model_dump_json(indent=2))
         return p
 
     def write_outcome(self, trial_id: str, outcome: Outcome) -> Path:

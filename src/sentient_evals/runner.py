@@ -9,6 +9,7 @@ from math import sqrt
 from typing import Callable, Literal, Sequence, TypeVar
 
 from .adapters import AgentAdapter
+from .atif.converters import transcript_to_trajectory
 from . import __version__
 from .artifacts import ArtifactWriter, TrialArtifacts
 from .env import EnvironmentToolExecutor, LocalToolExecutor
@@ -210,6 +211,18 @@ def _finalize_run(
     writer.write_json("result.json", run_result.model_dump())
     return summary
 
+
+def _adapter_version(adapter: AgentAdapter) -> str:
+    version_attr = getattr(adapter, "version", None)
+    if callable(version_attr):
+        try:
+            return str(version_attr())
+        except Exception:
+            return "unknown"
+    if isinstance(version_attr, str):
+        return version_attr
+    return "unknown"
+
 async def run_suite(
     *,
     tasks: Sequence[Task],
@@ -291,7 +304,14 @@ async def run_suite(
                 if recorder is not None:
                     recorder.close()
 
-            transcript_path = writer.write_transcript(trial_id, transcript)
+            trajectory = transcript_to_trajectory(
+                transcript,
+                session_id=trial_id,
+                agent_name=getattr(adapter, "name", cfg.adapter_name),
+                agent_version=_adapter_version(adapter),
+                model_name=getattr(adapter, "model_name", None),
+            )
+            trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
 
             grader_results = []
@@ -311,7 +331,7 @@ async def run_suite(
                 adapter=cfg.adapter_name,
                 seed=seed,
                 started_at=started_at,
-                transcript_path=str(transcript_path.relative_to(writer.run_dir)),
+                trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
                 outcome_path=str(outcome_path.relative_to(writer.run_dir)),
                 graders=grader_results,
                 error=err,
@@ -461,7 +481,14 @@ async def run_suite_bundles(
                 if recorder is not None:
                     recorder.close()
 
-            transcript_path = writer.write_transcript(trial_id, transcript)
+            trajectory = transcript_to_trajectory(
+                transcript,
+                session_id=trial_id,
+                agent_name=getattr(adapter, "name", cfg.adapter_name),
+                agent_version=_adapter_version(adapter),
+                model_name=getattr(adapter, "model_name", None),
+            )
+            trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
 
             grader_results = []
@@ -484,7 +511,7 @@ async def run_suite_bundles(
                 adapter=cfg.adapter_name,
                 seed=seed,
                 started_at=started_at,
-                transcript_path=str(transcript_path.relative_to(writer.run_dir)),
+                trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
                 outcome_path=str(outcome_path.relative_to(writer.run_dir)),
                 graders=grader_results,
                 error=err,
