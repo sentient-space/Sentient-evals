@@ -85,10 +85,19 @@ def run(
 
     grader_specs: list[dict] = []
     if graders_file is not None:
-        grader_specs = json.loads(graders_file.read_text(encoding="utf-8"))
+        parsed = json.loads(graders_file.read_text(encoding="utf-8"))
+        if not isinstance(parsed, list):
+            raise typer.BadParameter("--graders-file must contain a JSON array of grader specs")
+        grader_specs = parsed
     elif spec is not None:
         grader_specs = spec.graders
     elif tasks_dir is not None:
+        has_test_sh = any(tasks_dir.rglob("tests/test.sh"))
+        if not has_test_sh:
+            raise typer.BadParameter(
+                "No graders specified and no tests/test.sh found in --tasks-dir. "
+                "Provide --config/--graders-file or add tests/test.sh verifiers."
+            )
         grader_specs = [{"type": "verifier_script", "config": {}}]
     else:
         raise typer.BadParameter("Provide --graders-file or --config (graders) when using --tasks")
