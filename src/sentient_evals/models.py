@@ -80,6 +80,26 @@ class JudgeSpec(BaseModel):
     rubric: str | None = None
 
 
+class GraderSpec(BaseModel):
+    schema_version: Literal["v1"] = SCHEMA_VERSION
+    type: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    weight: float | None = None
+    required: bool = True
+
+
+class TrialSpec(BaseModel):
+    schema_version: Literal["v1"] = SCHEMA_VERSION
+    run_id: str
+    trial_id: str
+    task: Task
+    adapter: str
+    seed: int
+    attempt: int
+    graders: list[GraderSpec] = Field(default_factory=list)
+    env: dict[str, Any] = Field(default_factory=dict)
+
+
 class TrialConfig(BaseModel):
     schema_version: Literal["v1"] = SCHEMA_VERSION
     run_id: str

@@ -6,7 +6,7 @@
 
 - Run **tasks** concurrently with **multiple trials** to reduce variance.
 - Capture **trajectories (ATIF)** and **outcomes** (final environment state).
-- Support **code-based graders** (tests, static checks, tool-call verification) and **model-based graders** (LLM-as-judge, multi-judge voting + calibration).
+- Support **code-based graders** (tests, static checks, tool-call verification), **model-based graders** (LLM-as-judge, multi-judge voting + calibration), and **human review** hooks for calibration.
 - Produce a **Harbor-style jobs directory** for debuggability.
 - Keep the core harness framework-agnostic; integrate frameworks via adapters.
 
@@ -29,6 +29,31 @@ pip install "sentient-evals[llm]"
 ```bash
 sentient-evals --help
 sentient-evals run --help
+```
+
+### Plug-and-play graders via config
+
+For real evaluations, pass an adapter and grader config (TOML or JSON). The CLI can also default to `verifier_script` for task bundles when `tests/test.sh` exists.
+
+Example (TOML):
+
+```toml
+[adapter]
+type = "import"
+import_path = "my_project.my_adapter:build_adapter"
+
+[[graders]]
+type = "verifier_script"
+
+[[graders]]
+type = "static_analysis"
+config = { checks = [{ name = "ruff", cmd = "ruff check ." }] }
+```
+
+Run:
+
+```bash
+sentient-evals run --tasks-dir path/to/tasks --env docker_cli --config eval.toml --concurrency 4
 ```
 
 ## Task bundles (directory format)

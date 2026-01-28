@@ -11,36 +11,26 @@ from rich.console import Console
 from rich.table import Table
 
 from .environments.base import EnvironmentType
-from .graders import ExactMatchGrader
+from .config_files import load_run_spec
 from .models import SuiteConfig, Task
 from .junit import JUnitExportConfig, trials_to_junit_xml
 from .schema_export import export_json_schemas
 from .runner import RunConfig, run_suite, run_suite_bundles
 from .task_bundles import load_task_bundles
+from .registry import build_adapter, build_grader
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
-
-
-class JSONEchoAdapter:
-    name = "json_echo"
-
-    async def run(self, task: Task, *, seed: int, env):
-        # Minimal scaffold adapter: returns the input payload as outcome.
-        # Real integrations should implement AgentAdapter wrappers (LangChain/CrewAI/custom loops).
-        from .models import Outcome, TranscriptEvent
-
-        transcript = [
-            TranscriptEvent(kind="message", role="user", content=json.dumps(task.input)),
-            TranscriptEvent(kind="message", role="assistant", content="(adapter scaffold)"),
-        ]
-        return transcript, Outcome(summary="echo", data=task.input)
 
 
 @app.command()
 def run(
     tasks_path: Optional[Path] = typer.Option(None, "--tasks", exists=True, readable=True),
     tasks_dir: Optional[Path] = typer.Option(None, "--tasks-dir", exists=True, readable=True),
+    config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
+    graders_file: Optional[Path] = typer.Option(None, "--graders-file", exists=True, readable=True),
+    adapter: Optional[str] = typer.Option(None, "--adapter"),
+    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs"),
     jobs_dir: Path = typer.Option(Path("jobs"), "--jobs-dir"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     suite_id: str = typer.Option("default", "--suite-id"),
@@ -66,15 +56,44 @@ def run(
     if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
         raise typer.BadParameter("--env only supports local_python when using --tasks")
 
-    suite = SuiteConfig(
-        id=suite_id,
-        trials_per_task=trials_per_task,
-        concurrency=concurrency,
-        seeds=[seed] if seed is not None else None,
+    spec = load_run_spec(config) if config is not None else None
+    suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
+    suite = suite.model_copy(
+        update={
+            "id": suite_id,
+            "trials_per_task": trials_per_task,
+            "concurrency": concurrency,
+            "seeds": [seed] if seed is not None else suite.seeds,
+        }
     )
 
-    adapter = JSONEchoAdapter()
-    graders = [ExactMatchGrader(expected="")]  # scaffold; replace with real graders per-suite
+    if adapter is not None:
+        if adapter in {"workflow_stub", "example_installed"}:
+            adapter_type = adapter
+            import_path = None
+        else:
+            adapter_type = "import"
+            import_path = adapter
+        kwargs = json.loads(adapter_kwargs) if adapter_kwargs else {}
+        adapter_obj = build_adapter(adapter_type=adapter_type, import_path=import_path, kwargs=kwargs)
+    elif spec is not None:
+        adapter_obj = build_adapter(
+            adapter_type=spec.adapter.type, import_path=spec.adapter.import_path, kwargs=spec.adapter.kwargs
+        )
+    else:
+        raise typer.BadParameter("Provide --config or --adapter to select an adapter")
+
+    grader_specs: list[dict] = []
+    if graders_file is not None:
+        grader_specs = json.loads(graders_file.read_text(encoding="utf-8"))
+    elif spec is not None:
+        grader_specs = spec.graders
+    elif tasks_dir is not None:
+        grader_specs = [{"type": "verifier_script", "config": {}}]
+    else:
+        raise typer.BadParameter("Provide --graders-file or --config (graders) when using --tasks")
+
+    graders = [build_grader(s) for s in grader_specs]
     if run_id is None:
         run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S")
     env_type = EnvironmentType(env.lower())
@@ -82,7 +101,7 @@ def run(
         run_id=run_id,
         suite=suite,
         jobs_dir=jobs_dir,
-        adapter_name=adapter.name,
+        adapter_name=getattr(adapter_obj, "name", "adapter"),
         mode="resume" if resume else "fresh",
         replay_mode=replay_mode.lower(),  # type: ignore[arg-type]
         env_type=env_type,
@@ -93,12 +112,14 @@ def run(
 
     if tasks_dir is not None:
         bundles = load_task_bundles(tasks_dir)
-        results, summary = asyncio.run(run_suite_bundles(bundles=bundles, adapter=adapter, graders=graders, cfg=cfg))
+        results, summary = asyncio.run(
+            run_suite_bundles(bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg)
+        )
     else:
         assert tasks_path is not None
         tasks_raw = json.loads(tasks_path.read_text())
         tasks = [Task(**t) for t in tasks_raw]
-        results, summary = asyncio.run(run_suite(tasks=tasks, adapter=adapter, graders=graders, cfg=cfg))
+        results, summary = asyncio.run(run_suite(tasks=tasks, adapter=adapter_obj, graders=graders, cfg=cfg))
 
     table = Table(title=f"sentient-evals: {summary.run_id}")
     table.add_column("trial")

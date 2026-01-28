@@ -15,9 +15,10 @@ from .artifacts import ArtifactWriter, TrialArtifacts
 from .env import EnvironmentToolExecutor, LocalToolExecutor
 from .environments.base import EnvironmentConfig, EnvironmentType
 from .environments.factory import EnvironmentFactory
-from .graders import Grader
+from .graders import Grader, supports_env_grading
 from .models import (
     Outcome,
+    Severity,
     RunConfigFile,
     RunResult,
     RunStatus,
@@ -318,11 +319,32 @@ async def run_suite(
             if ok:
                 artifacts = TrialArtifacts(writer.trial_dir(trial_id))
                 for g in graders:
-                    grader_results.append(
-                        await g.grade(
-                            task=task, transcript=transcript, outcome=outcome.data, artifacts=artifacts
+                    try:
+                        if supports_env_grading(g):
+                            result = await g.grade_with_env(  # type: ignore[attr-defined]
+                                task=task,
+                                transcript=transcript,
+                                outcome=outcome.data,
+                                artifacts=artifacts,
+                                env=env,
+                            )
+                        else:
+                            result = await g.grade(
+                                task=task, transcript=transcript, outcome=outcome.data, artifacts=artifacts
+                            )
+                    except Exception as exc:  # pragma: no cover
+                        artifacts.verifier().write_json(
+                            f"grader_error_{getattr(g, 'name', 'unknown')}.json",
+                            {"error": str(exc)},
                         )
-                    )
+                        result = GraderResult(
+                            name=getattr(g, "name", "unknown"),
+                            score=0.0,
+                            passed=False,
+                            severity=Severity.error,
+                            details={"error": str(exc)},
+                        )
+                    grader_results.append(result)
 
             trial_result = TrialResult(
                 ok=ok,
@@ -464,10 +486,43 @@ async def run_suite_bundles(
             elif cfg.replay_mode == "replay":
                 tool_executor = ReplayingToolExecutor(log_path=replay_log, strict=cfg.strict_replay)
 
+            grader_results = []
             try:
                 await environment.start(force_build=False)
                 transcript, outcome = await adapter.run(bundle.task, seed=seed, env=tool_executor)
                 ok = True
+                if ok:
+                    artifacts = TrialArtifacts(writer.trial_dir(trial_id))
+                    for g in graders:
+                        try:
+                            if supports_env_grading(g):
+                                result = await g.grade_with_env(  # type: ignore[attr-defined]
+                                    task=bundle.task,
+                                    transcript=transcript,
+                                    outcome=outcome.data,
+                                    artifacts=artifacts,
+                                    env=tool_executor,
+                                )
+                            else:
+                                result = await g.grade(
+                                    task=bundle.task,
+                                    transcript=transcript,
+                                    outcome=outcome.data,
+                                    artifacts=artifacts,
+                                )
+                        except Exception as exc:  # pragma: no cover
+                            artifacts.verifier().write_json(
+                                f"grader_error_{getattr(g, 'name', 'unknown')}.json",
+                                {"error": str(exc)},
+                            )
+                            result = GraderResult(
+                                name=getattr(g, "name", "unknown"),
+                                score=0.0,
+                                passed=False,
+                                severity=Severity.error,
+                                details={"error": str(exc)},
+                            )
+                        grader_results.append(result)
             except Exception as e:  # pragma: no cover
                 err = str(e)
                 ok = False
@@ -490,19 +545,6 @@ async def run_suite_bundles(
             )
             trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
-
-            grader_results = []
-            if ok:
-                artifacts = TrialArtifacts(writer.trial_dir(trial_id))
-                for g in graders:
-                    grader_results.append(
-                        await g.grade(
-                            task=bundle.task,
-                            transcript=transcript,
-                            outcome=outcome.data,
-                            artifacts=artifacts,
-                        )
-                    )
 
             trial_result = TrialResult(
                 ok=ok,

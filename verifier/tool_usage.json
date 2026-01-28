@@ -1,0 +1,16 @@
+{
+  "missing": [],
+  "forbidden": [],
+  "rule_failures": [
+    {
+      "tool": "read_file",
+      "required": true,
+      "args": {
+        "path": "a.txt"
+      }
+    }
+  ],
+  "limits": [],
+  "turn_count": 0,
+  "tool_call_count": 1
+}
