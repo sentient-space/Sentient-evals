@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .environments.base import EnvironmentType
+from .agent_file import load_agent_adapter_from_file, parse_agent_file_ref
 from .config_files import load_run_spec
 from .models import SuiteConfig, Task
 from .junit import JUnitExportConfig, trials_to_junit_xml
@@ -29,6 +30,7 @@ def run(
     tasks_dir: Optional[Path] = typer.Option(None, "--tasks-dir", exists=True, readable=True),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
     graders_file: Optional[Path] = typer.Option(None, "--graders-file", exists=True, readable=True),
+    agent_file: Optional[str] = typer.Option(None, "--agent-file"),
     adapter: Optional[str] = typer.Option(None, "--adapter"),
     adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs"),
     jobs_dir: Path = typer.Option(Path("jobs"), "--jobs-dir"),
@@ -67,7 +69,13 @@ def run(
         }
     )
 
-    if adapter is not None:
+    if agent_file is not None:
+        try:
+            ref = parse_agent_file_ref(agent_file)
+            adapter_obj = load_agent_adapter_from_file(ref)
+        except Exception as exc:
+            raise typer.BadParameter(f"--agent-file invalid: {exc}") from exc
+    elif adapter is not None:
         if adapter in {"workflow_stub", "example_installed"}:
             adapter_type = adapter
             import_path = None
@@ -81,7 +89,7 @@ def run(
             adapter_type=spec.adapter.type, import_path=spec.adapter.import_path, kwargs=spec.adapter.kwargs
         )
     else:
-        raise typer.BadParameter("Provide --config or --adapter to select an adapter")
+        raise typer.BadParameter("Provide --agent-file, --config, or --adapter to select an adapter")
 
     grader_specs: list[dict] = []
     if graders_file is not None:

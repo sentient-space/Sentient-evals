@@ -35,6 +35,19 @@ sentient-evals run --help
 
 For real evaluations, pass an adapter and grader config (TOML or JSON). The CLI can also default to `verifier_script` for task bundles when `tests/test.sh` exists.
 
+### Plug-and-play custom agents via --agent-file
+
+If you have a local Python agent (LangChain, CrewAI, custom loop, etc.), you can point the CLI at a file without packaging your repo:
+
+```bash
+sentient-evals run --tasks-dir ./tasks --env local_python --agent-file ./path/to/agent.py:my_agent --config eval.toml
+```
+
+The `:my_agent` attribute can be:
+- an adapter object with an async `run(task, seed, env)` method
+- a factory function that returns such an adapter
+- a plain function (sync/async) that returns `dict`/`str` (it will be wrapped automatically)
+
 Example (TOML):
 
 ```toml
