@@ -23,6 +23,23 @@ from .registry import build_adapter, build_grader
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 
+_BUILTIN_ADAPTERS = {
+    "workflow_stub",
+    "example_installed",
+    "aider",
+    "claude-code",
+    "codex",
+    "cursor-cli",
+    "cline-cli",
+    "gemini-cli",
+    "goose",
+    "mini-swe-agent",
+    "opencode",
+    "openhands",
+    "qwen-coder",
+    "swe-agent",
+}
+
 
 @app.command()
 def run(
@@ -76,7 +93,7 @@ def run(
         except Exception as exc:
             raise typer.BadParameter(f"--agent-file invalid: {exc}") from exc
     elif adapter is not None:
-        if adapter in {"workflow_stub", "example_installed"}:
+        if adapter in _BUILTIN_ADAPTERS:
             adapter_type = adapter
             import_path = None
         else:
@@ -113,6 +130,8 @@ def run(
     graders = [build_grader(s) for s in grader_specs]
     if run_id is None:
         run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S")
+
+    jobs_dir = jobs_dir.expanduser().resolve()
     env_type = EnvironmentType(env.lower())
     cfg = RunConfig(
         run_id=run_id,

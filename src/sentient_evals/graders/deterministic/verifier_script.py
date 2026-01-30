@@ -47,6 +47,9 @@ class VerifierScriptGrader:
         env: ToolExecutor,
     ) -> GraderResult:
         res = await env.exec(self.spec.cmd, timeout_s=self.spec.timeout_s)
+        # If the script exists but is not executable, retry via sh.
+        if res.exit_code == 126 and "permission denied" in (res.stderr or "").lower():
+            res = await env.exec("sh -lc 'sh ./tests/test.sh'", timeout_s=self.spec.timeout_s)
         artifacts.verifier().write_json(
             "verifier_exec.json",
             {

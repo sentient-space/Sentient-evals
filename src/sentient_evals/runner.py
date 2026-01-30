@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import random
 import traceback
+import inspect
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from math import sqrt
@@ -12,7 +14,7 @@ from .adapters import AgentAdapter
 from .atif.converters import transcript_to_trajectory
 from . import __version__
 from .artifacts import ArtifactWriter, TrialArtifacts
-from .env import EnvironmentToolExecutor, LocalToolExecutor
+from .env import EnvironmentToolExecutor, LocalToolExecutor, ToolExecutor
 from .environments.base import EnvironmentConfig, EnvironmentType
 from .environments.factory import EnvironmentFactory
 from .graders import Grader, supports_env_grading
@@ -64,6 +66,37 @@ def _wilson_ci95(passed: int, n: int) -> tuple[float, float]:
 
 def _trial_id(task_id: str, attempt: int) -> str:
     return f"{task_id}__{attempt}"
+
+
+def _best_effort_instruction(task: Task) -> str:
+    for key in ("instruction", "prompt", "query", "question", "text", "input"):
+        val = task.input.get(key) if isinstance(task.input, dict) else None
+        if isinstance(val, str) and val.strip():
+            return val
+    if isinstance(task.input, dict) and len(task.input) == 1:
+        only = next(iter(task.input.values()))
+        if isinstance(only, str) and only.strip():
+            return only
+    return json.dumps(task.input, ensure_ascii=False) if task.input else task.id
+
+
+async def _call_adapter(
+    *,
+    adapter: AgentAdapter,
+    task: Task,
+    instruction: str | None,
+    seed: int,
+    env: ToolExecutor,
+    artifacts: TrialArtifacts,
+) -> tuple[list[TranscriptEvent], Outcome]:
+    fn = getattr(adapter, "run")
+    sig = inspect.signature(fn)
+    kwargs: dict[str, object] = {"task": task, "seed": seed, "env": env}
+    if "instruction" in sig.parameters:
+        kwargs["instruction"] = instruction
+    if "artifacts" in sig.parameters:
+        kwargs["artifacts"] = artifacts
+    return await fn(**kwargs)
 
 
 def _ensure_run_config(
@@ -231,7 +264,8 @@ async def run_suite(
     graders: Sequence[Grader],
     cfg: RunConfig,
 ) -> tuple[list[TrialResult], RunSummary]:
-    writer = ArtifactWriter(cfg.jobs_dir, cfg.run_id)
+    # Ensure jobs_dir is absolute so container backends can mount workspace/logs reliably.
+    writer = ArtifactWriter(cfg.jobs_dir.expanduser().resolve(), cfg.run_id)
     writer.ensure_run_dirs()
     cancel_path = writer.run_dir / "cancel.json"
     _ensure_run_config(writer, cfg, None)
@@ -294,8 +328,16 @@ async def run_suite(
             elif cfg.replay_mode == "replay":
                 env = ReplayingToolExecutor(log_path=replay_log, strict=cfg.strict_replay)
 
+            artifacts = TrialArtifacts(writer.trial_dir(trial_id))
             try:
-                transcript, outcome = await adapter.run(task, seed=seed, env=env)
+                transcript, outcome = await _call_adapter(
+                    adapter=adapter,
+                    task=task,
+                    instruction=_best_effort_instruction(task),
+                    seed=seed,
+                    env=env,
+                    artifacts=artifacts,
+                )
                 ok = True
             except Exception as e:  # pragma: no cover
                 err = str(e)
@@ -317,7 +359,6 @@ async def run_suite(
 
             grader_results = []
             if ok:
-                artifacts = TrialArtifacts(writer.trial_dir(trial_id))
                 for g in graders:
                     try:
                         if supports_env_grading(g):
@@ -384,7 +425,7 @@ async def run_suite_bundles(
     graders: Sequence[Grader],
     cfg: RunConfig,
 ) -> tuple[list[TrialResult], RunSummary]:
-    writer = ArtifactWriter(cfg.jobs_dir, cfg.run_id)
+    writer = ArtifactWriter(cfg.jobs_dir.expanduser().resolve(), cfg.run_id)
     writer.ensure_run_dirs()
     cancel_path = writer.run_dir / "cancel.json"
     _ensure_run_config(writer, cfg, {"env_type": cfg.env_type.value})
@@ -442,6 +483,9 @@ async def run_suite_bundles(
             container_image = None
             if getattr(bundle.env, "type", None) == "container":
                 container_image = getattr(bundle.env, "image", None)
+            container_platform = None
+            if getattr(bundle.env, "type", None) == "container":
+                container_platform = getattr(bundle.env, "platform", None)
 
             trial_cfg = TrialConfig(
                 run_id=cfg.run_id,
@@ -472,6 +516,7 @@ async def run_suite_bundles(
                 task_files_dir=bundle.files_dir,
                 task_digest=bundle.digest,
                 container_image=container_image,
+                container_platform=container_platform,
                 docker_image_tag_prefix=cfg.docker_image_tag_prefix,
                 daytona_snapshot_template=cfg.daytona_snapshot_template,
                 daytona_network_block_all=cfg.daytona_network_block_all,
@@ -489,10 +534,25 @@ async def run_suite_bundles(
             grader_results = []
             try:
                 await environment.start(force_build=False)
-                transcript, outcome = await adapter.run(bundle.task, seed=seed, env=tool_executor)
+               
+                if bundle.files_dir is not None and bundle.files_dir.exists():
+                    await environment.upload_dir(bundle.files_dir, ".")
+                if bundle.tests_dir is not None and bundle.tests_dir.exists():
+                    await environment.upload_dir(bundle.tests_dir, "tests")
+                    
+                    await environment.exec("sh -lc 'chmod +x ./tests/test.sh 2>/dev/null || true'")
+
+                artifacts = TrialArtifacts(writer.trial_dir(trial_id))
+                transcript, outcome = await _call_adapter(
+                    adapter=adapter,
+                    task=bundle.task,
+                    instruction=bundle.instruction or _best_effort_instruction(bundle.task),
+                    seed=seed,
+                    env=tool_executor,
+                    artifacts=artifacts,
+                )
                 ok = True
                 if ok:
-                    artifacts = TrialArtifacts(writer.trial_dir(trial_id))
                     for g in graders:
                         try:
                             if supports_env_grading(g):

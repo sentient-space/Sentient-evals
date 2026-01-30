@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Any, Awaitable, Callable, get_args, get_origin
 
 from .adapters import AgentAdapter
+from .artifacts import TrialArtifacts
 from .env import ToolExecutor
 from .models import Outcome, Task, TranscriptEvent
 
@@ -76,7 +77,15 @@ def _best_effort_prompt(task_input: dict[str, Any]) -> str:
     return json.dumps(task_input, ensure_ascii=False)
 
 
-def _call_kwargs_for(fn: Callable[..., Any], *, task: Task, env: ToolExecutor, seed: int) -> dict[str, Any]:
+def _call_kwargs_for(
+    fn: Callable[..., Any],
+    *,
+    task: Task,
+    instruction: str | None,
+    env: ToolExecutor,
+    seed: int,
+    artifacts: TrialArtifacts,
+) -> dict[str, Any]:
     sig = inspect.signature(fn)
     kwargs: dict[str, Any] = {}
     prompt = _best_effort_prompt(task.input)
@@ -85,12 +94,16 @@ def _call_kwargs_for(fn: Callable[..., Any], *, task: Task, env: ToolExecutor, s
             kwargs[name] = task.input
         elif name == "input":
             kwargs[name] = prompt if _annotation_is_str(param.annotation) else task.input
+        elif name in {"instruction"}:
+            kwargs[name] = instruction or prompt
         elif name in {"task"}:
             kwargs[name] = task
         elif name in {"tools", "env"}:
             kwargs[name] = env
         elif name in {"seed"}:
             kwargs[name] = seed
+        elif name in {"artifacts"}:
+            kwargs[name] = artifacts
         elif name in {"context"}:
             ctx = dict(task.metadata or {})
             ctx.setdefault("stream", False)
@@ -104,12 +117,27 @@ class CallableAgentAdapter:
         self.name = name or getattr(fn, "__name__", "callable_agent")
 
     async def run(
-        self, task: Task, *, seed: int, env: ToolExecutor
+        self,
+        task: Task,
+        *,
+        instruction: str | None = None,
+        seed: int,
+        env: ToolExecutor,
+        artifacts: TrialArtifacts | None = None,
     ) -> tuple[list[TranscriptEvent], Outcome]:
-        async_fn = _as_async(self._fn)
-        kwargs = _call_kwargs_for(self._fn, task=task, env=env, seed=seed)
+        if artifacts is None:
+            # Backwards-compatible default for direct calls/tests that don't provide artifacts.
+            # Runner paths always pass a trial-scoped artifacts directory.
+            artifacts = TrialArtifacts(Path.cwd() / ".sentient-evals-artifacts")
 
-        transcript: list[TranscriptEvent] = [TranscriptEvent(kind="message", role="user", content=str(kwargs.get("input", task.input)))]
+        async_fn = _as_async(self._fn)
+        kwargs = _call_kwargs_for(
+            self._fn, task=task, instruction=instruction, env=env, seed=seed, artifacts=artifacts
+        )
+
+        transcript: list[TranscriptEvent] = [
+            TranscriptEvent(kind="message", role="user", content=str(kwargs.get("input", task.input)))
+        ]
         result = await async_fn(**kwargs)
 
         if isinstance(result, tuple) and len(result) == 2:

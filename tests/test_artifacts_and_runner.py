@@ -15,7 +15,7 @@ from sentient_evals.task_bundles import load_task_bundles
 class FakeAdapter:
     name = "fake"
 
-    async def run(self, task: Task, *, seed: int, env):
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
         return (
             [TranscriptEvent(kind="message", role="user", content="hi")],
             Outcome(summary="ok", data={"answer": "x"}),
@@ -187,7 +187,7 @@ def test_cancel_prevents_scheduling(tmp_path: Path):
 class ReadsWorkspaceAdapter:
     name = "reads_workspace"
 
-    async def run(self, task: Task, *, seed: int, env):
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
         txt = await env.read_file("hello.txt")
         return (
             [TranscriptEvent(kind="message", role="user", content=task.id)],

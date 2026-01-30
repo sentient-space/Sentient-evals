@@ -30,11 +30,13 @@ class DockerSDKEnvironment(BaseEnvironment):
         environment_dir: Path | None,
         task_digest: str | None,
         image_tag_prefix: str,
+        platform: str | None = None,
     ):
         super().__init__(trial_id=trial_id, workspace_dir=workspace_dir, logs_dir=logs_dir, config=config)
         self.environment_dir = environment_dir
         self.task_digest = task_digest
         self.image_tag_prefix = image_tag_prefix
+        self.platform = platform
         self._client: Any | None = None
         self._container: Any | None = None
         self._image: str | None = None
@@ -74,6 +76,7 @@ class DockerSDKEnvironment(BaseEnvironment):
                     path=str(self.environment_dir),
                     dockerfile=str(dockerfile),
                     tag=tag,
+                    platform=self.platform,
                 )
 
             # Cleanup any existing container with same name.
@@ -97,13 +100,12 @@ class DockerSDKEnvironment(BaseEnvironment):
                 name=self._container_name(),
                 detach=True,
                 working_dir="/workspace",
+                platform=self.platform,
                 volumes={
                     str(self.workspace_dir): {"bind": "/workspace", "mode": "rw"},
                     str(self.logs_dir): {"bind": "/logs", "mode": "rw"},
                 },
                 network_mode=network_mode,
-                cap_drop=["ALL"],
-                security_opt=["no-new-privileges"],
                 **host_cfg,
             )
 

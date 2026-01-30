@@ -4,6 +4,20 @@ import importlib
 from typing import Any
 
 from .adapters import ExampleInstalledAdapter, WorkflowStubAdapter
+from .adapters.installed import (
+    AiderAdapter,
+    ClaudeCodeAdapter,
+    CodexAdapter,
+    CursorCliAdapter,
+    ClineCliAdapter,
+    GeminiCliAdapter,
+    GooseAdapter,
+    MiniSweAgentAdapter,
+    OpenCodeAdapter,
+    OpenHandsAdapter,
+    QwenCodeAdapter,
+    SweAgentAdapter,
+)
 from .graders import (
     BudgetGrader,
     ExactMatchGrader,
@@ -41,6 +55,30 @@ def build_adapter(
         return WorkflowStubAdapter()
     if adapter_type == "example_installed":
         return ExampleInstalledAdapter()
+    if adapter_type == "aider":
+        return AiderAdapter(**kwargs)
+    if adapter_type == "claude-code":
+        return ClaudeCodeAdapter(**kwargs)
+    if adapter_type == "codex":
+        return CodexAdapter(**kwargs)
+    if adapter_type == "cursor-cli":
+        return CursorCliAdapter(**kwargs)
+    if adapter_type == "cline-cli":
+        return ClineCliAdapter(**kwargs)
+    if adapter_type == "gemini-cli":
+        return GeminiCliAdapter(**kwargs)
+    if adapter_type == "goose":
+        return GooseAdapter(**kwargs)
+    if adapter_type == "mini-swe-agent":
+        return MiniSweAgentAdapter(**kwargs)
+    if adapter_type == "opencode":
+        return OpenCodeAdapter(**kwargs)
+    if adapter_type == "openhands":
+        return OpenHandsAdapter(**kwargs)
+    if adapter_type == "qwen-coder":
+        return QwenCodeAdapter(**kwargs)
+    if adapter_type == "swe-agent":
+        return SweAgentAdapter(**kwargs)
     if adapter_type == "import":
         if not import_path:
             raise ValueError("adapter type=import requires import_path")

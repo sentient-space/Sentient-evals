@@ -34,6 +34,7 @@ class ArtifactWriter:
         d = self.trial_dir(trial_id)
         (d / "judge").mkdir(parents=True, exist_ok=True)
         (d / "verifier").mkdir(parents=True, exist_ok=True)
+        (d / "agent").mkdir(parents=True, exist_ok=True)
 
     def write_trial_config(self, cfg: TrialConfig) -> Path:
         p = self.trial_dir(cfg.trial_id) / "config.json"
@@ -84,6 +85,9 @@ class TrialArtifacts:
 
     def verifier(self) -> TrialArtifacts:
         return self.scoped("verifier")
+
+    def agent(self) -> TrialArtifacts:
+        return self.scoped("agent")
 
     def write_text(self, relative_path: str, text: str) -> Path:
         p = self.base_dir / relative_path
