@@ -5,6 +5,8 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .parsers.mini_swe_agent import parse_mini_swe_agent_trajectory
+from ...models import TranscriptEvent
 
 
 class MiniSweAgentAdapter(BaseInstalledAdapter):
@@ -47,3 +49,27 @@ class MiniSweAgentAdapter(BaseInstalledAdapter):
                 env=env,
             )
         ]
+
+    async def parse_run_artifacts(
+        self,
+        *,
+        task,
+        instruction: str,
+        results,
+        artifacts,
+    ) -> list[TranscriptEvent]:
+        trial_dir = artifacts.base_dir
+        traj_path = trial_dir / "env_logs" / "agent" / "mini-swe-agent.trajectory.json"
+        parsed = parse_mini_swe_agent_trajectory(traj_path, instruction=instruction, model_name=self.model_name)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        parsed_dir = artifacts.agent().scoped("parsed")
+        parsed_dir.write_json("metrics.json", parsed.metrics)
+        if parsed.extra:
+            parsed_dir.write_json("extra.json", parsed.extra)
+        out = list(parsed.events)
+        if parsed.metrics:
+            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
+        return out

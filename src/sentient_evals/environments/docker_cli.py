@@ -121,14 +121,14 @@ class DockerCLIEnvironment(BaseEnvironment):
             f"{self.engine} inspect {shlex.quote(self._container_name)} "
             "--format '{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}'"
         )
-        try:
-            (self.logs_dir / "docker_inspect.txt").write_text(
-                (insp.stdout or insp.stderr or "").strip() + "\n", encoding="utf-8"
-            )
-        except Exception:
-            pass
         state = (insp.stdout or "").strip().split(" ", 1)[0] if insp.exit_code == 0 else ""
         if state and state != "running":
+            try:
+                (self.logs_dir / "docker_inspect.txt").write_text(
+                    (insp.stdout or insp.stderr or "").strip() + "\n", encoding="utf-8"
+                )
+            except Exception:
+                pass
             try:
                 (self.logs_dir / "docker_run_command.txt").write_text(cmd + "\n", encoding="utf-8")
                 (self.logs_dir / "docker_run_stdout.txt").write_text(res.stdout or "", encoding="utf-8")

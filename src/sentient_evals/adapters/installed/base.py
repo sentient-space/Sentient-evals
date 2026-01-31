@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
+
+from jinja2 import Environment, StrictUndefined
 
 from ...artifacts import TrialArtifacts
 from ...env import ExecResult, ToolExecutor
@@ -21,31 +23,9 @@ class ExecCommand:
 
 
 def _render_template(template: str, variables: dict[str, str | None]) -> str:
-    def _replace_if_else(match: re.Match[str]) -> str:
-        key = match.group(1).strip()
-        truthy = bool(variables.get(key))
-        return match.group(2) if truthy else match.group(3)
-
-    def _replace_if(match: re.Match[str]) -> str:
-        key = match.group(1).strip()
-        truthy = bool(variables.get(key))
-        return match.group(2) if truthy else ""
-
-    template = re.sub(
-        r"\{\%\s*if\s+([a-zA-Z0-9_]+)\s*\%\}(.*?)\{\%\s*else\s*\%\}(.*?)\{\%\s*endif\s*\%\}",
-        _replace_if_else,
-        template,
-        flags=re.DOTALL,
-    )
-    template = re.sub(
-        r"\{\%\s*if\s+([a-zA-Z0-9_]+)\s*\%\}(.*?)\{\%\s*endif\s*\%\}",
-        _replace_if,
-        template,
-        flags=re.DOTALL,
-    )
-    for key, value in variables.items():
-        template = template.replace(f"{{{{ {key} }}}}", "" if value is None else str(value))
-    return template
+   
+    env = Environment(undefined=StrictUndefined)
+    return env.from_string(template).render(**variables)
 
 
 class BaseInstalledAdapter:
@@ -54,6 +34,8 @@ class BaseInstalledAdapter:
     model_name: str | None = None
     install_timeout_s: float | None = None
     run_timeout_s: float | None = None
+
+    _logger = logging.getLogger(__name__)
 
     def __init__(
         self,
@@ -101,7 +83,6 @@ class BaseInstalledAdapter:
             TranscriptEvent(kind="message", role="user", content=instruction),
             TranscriptEvent(kind="message", role="assistant", content=output.strip()),
         ]
-        artifacts.agent().write_text("transcript_preview.txt", output.strip())
         return transcript
 
     def build_outcome(self, transcript: Sequence[TranscriptEvent]) -> Outcome:
@@ -110,11 +91,36 @@ class BaseInstalledAdapter:
             if ev.kind == "message" and ev.role == "assistant":
                 answer = ev.content or ""
                 break
-        return Outcome(summary="ok", data={"answer": answer})
+        
+        agg: dict[str, float] = {}
+        for ev in transcript:
+            if not ev.metrics:
+                continue
+            for k, v in ev.metrics.items():
+                try:
+                    fv = float(v)
+                except Exception:
+                    continue
+                # Prefer max to avoid double-counting if logs include totals repeatedly.
+                agg[k] = max(agg.get(k, 0.0), fv)
+        if "prompt_tokens" in agg or "completion_tokens" in agg:
+            agg["total_tokens"] = float(agg.get("prompt_tokens", 0.0) + agg.get("completion_tokens", 0.0))
+        if "cost_usd" in agg:
+            agg["total_cost_usd"] = float(agg["cost_usd"])
+        data: dict[str, Any] = {"answer": answer}
+        if agg:
+            data["metrics"] = agg
+        return Outcome(summary="ok", data=data)
 
     def _render_install_script(self) -> str:
         template = self.install_template_path.read_text(encoding="utf-8")
-        return _render_template(template, self.template_vars())
+        try:
+            return _render_template(template, self.template_vars())
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to render install script template for adapter={self.name} "
+                f"template={self.install_template_path}"
+            ) from exc
 
     def _format_command(self, cmd: ExecCommand) -> tuple[str, str]:
         parts = []
@@ -152,6 +158,11 @@ class BaseInstalledAdapter:
         res = await env.exec("sh -lc /installed-agent/install.sh", timeout_s=self.install_timeout_s)
         install_dir = agent_dir.scoped("install")
         await self._write_exec_result(install_dir, res)
+        if res.exit_code != 0:
+            raise RuntimeError(
+                f"Install failed for adapter={self.name} (exit_code={res.exit_code}). "
+                f"See trial artifacts under: {install_dir.base_dir}"
+            )
 
     async def run(
         self,
@@ -172,6 +183,11 @@ class BaseInstalledAdapter:
             res = await env.exec(actual_cmd, timeout_s=cmd.timeout_s or self.run_timeout_s)
             await self._write_exec_result(cmd_artifacts, res)
             results.append(res)
+            if res.exit_code != 0:
+                raise RuntimeError(
+                    f"Agent command failed for adapter={self.name} cmd_index={idx} "
+                    f"(exit_code={res.exit_code}). See: {cmd_artifacts.base_dir}"
+                )
         transcript = await self.parse_run_artifacts(
             task=task, instruction=normalized_instruction, results=results, artifacts=artifacts
         )

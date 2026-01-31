@@ -5,6 +5,8 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .parsers.claude_code import parse_claude_code_session
+from ...models import TranscriptEvent
 
 
 class ClaudeCodeAdapter(BaseInstalledAdapter):
@@ -89,3 +91,29 @@ class ClaudeCodeAdapter(BaseInstalledAdapter):
                 env=env,
             ),
         ]
+
+    async def parse_run_artifacts(
+        self,
+        *,
+        task,
+        instruction: str,
+        results,
+        artifacts,
+    ) -> list[TranscriptEvent]:
+        trial_dir = artifacts.base_dir
+        agent_logs = trial_dir / "env_logs" / "agent"
+        parsed = parse_claude_code_session(agent_logs, instruction=instruction)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        parsed_dir = artifacts.agent().scoped("parsed")
+        parsed_dir.write_json("metrics.json", parsed.metrics)
+        if parsed.tool_definitions is not None:
+            parsed_dir.write_json("tool_definitions.json", parsed.tool_definitions)
+        if parsed.extra:
+            parsed_dir.write_json("extra.json", parsed.extra)
+        out = list(parsed.events)
+        if parsed.metrics:
+            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
+        return out

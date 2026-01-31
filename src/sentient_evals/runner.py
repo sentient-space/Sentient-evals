@@ -20,6 +20,7 @@ from .environments.factory import EnvironmentFactory
 from .graders import Grader, supports_env_grading
 from .models import (
     Outcome,
+    TranscriptEvent,
     Severity,
     RunConfigFile,
     RunResult,
@@ -27,6 +28,7 @@ from .models import (
     RunSummary,
     SuiteConfig,
     Task,
+    GraderResult,
     TrialConfig,
     TrialResult,
     utcnow,
@@ -102,7 +104,7 @@ async def _call_adapter(
 def _ensure_run_config(
     writer: ArtifactWriter, cfg: RunConfig, extra_provenance: dict[str, object] | None
 ) -> None:
-    if cfg.mode == "fresh" or not (writer.run_dir / "config.json").exists():
+    if cfg.mode == "fresh" or not (writer.run_dir / "run_config.json").exists():
         provenance = runtime_provenance()
         if extra_provenance:
             provenance = provenance | extra_provenance
@@ -114,7 +116,7 @@ def _ensure_run_config(
             harness_version=__version__,
             provenance=provenance,
         )
-        writer.write_json("config.json", run_cfg.model_dump())
+        writer.write_json("run_config.json", run_cfg.model_dump())
 
 
 T = TypeVar("T")
@@ -138,7 +140,7 @@ def _resume_trials(
     remaining: list[tuple[T, int, int]] = []
     for item, attempt, seed in trials:
         tid = trial_id_fn(item, attempt)
-        existing = writer.trial_dir(tid) / "result.json"
+        existing = writer.trial_dir(tid) / "trial_result.json"
         if existing.exists():
             results.append(TrialResult.model_validate_json(existing.read_text(encoding="utf-8")))
         else:
@@ -242,7 +244,7 @@ def _finalize_run(
         },
     )
 
-    writer.write_json("result.json", run_result.model_dump())
+    writer.write_json("run_result.json", run_result.model_dump())
     return summary
 
 
@@ -354,6 +356,7 @@ async def run_suite(
                 agent_version=_adapter_version(adapter),
                 model_name=getattr(adapter, "model_name", None),
             )
+            transcript_path = writer.write_transcript(trial_id, transcript)
             trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
 
@@ -394,6 +397,7 @@ async def run_suite(
                 adapter=cfg.adapter_name,
                 seed=seed,
                 started_at=started_at,
+                transcript_path=str(transcript_path.relative_to(writer.run_dir)),
                 trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
                 outcome_path=str(outcome_path.relative_to(writer.run_dir)),
                 graders=grader_results,
@@ -603,6 +607,7 @@ async def run_suite_bundles(
                 agent_version=_adapter_version(adapter),
                 model_name=getattr(adapter, "model_name", None),
             )
+            transcript_path = writer.write_transcript(trial_id, transcript)
             trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
 
@@ -613,6 +618,7 @@ async def run_suite_bundles(
                 adapter=cfg.adapter_name,
                 seed=seed,
                 started_at=started_at,
+                transcript_path=str(transcript_path.relative_to(writer.run_dir)),
                 trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
                 outcome_path=str(outcome_path.relative_to(writer.run_dir)),
                 graders=grader_results,

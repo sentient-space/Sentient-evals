@@ -71,6 +71,13 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
 - **Transcript vs outcome**: graders must be able to score either the full transcript/trajectory or the final outcome state (and often both).
 - **Noise/variance**: multi-trial is default; report confidence/variance and avoid overfitting to single-run outcomes.
 
+What can make Sentient meaningfully “more than Harbor” (and a moat)
+Technique breadth + composability: a single harness that supports many eval families (LLM-as-judge, deterministic/unit-test, rubric + tool-use constraints, budget/latency, security policies, multi-run stats, etc.) in a consistent schema.
+Managed execution: queueing, concurrency, caching, sandbox orchestration, artifact retention, reproducibility, and cost controls at scale.
+Workflow + governance: datasets/benchmarks versioning, eval baselines, regression gates for PRs, audit trails, RBAC, approvals.
+Product integration: “run eval suites on every agent change” as a first-class part of your AgentOps dashboard (telemetry + evals + deployments).
+So: we’re not inherently building a carbon copy, but we could end up there unless the SaaS layer and the “all techniques, one interface” layer become the center of gravity.
+
 ## Task list (stepwise)
 
 - [x] 1. Define public schemas + contracts

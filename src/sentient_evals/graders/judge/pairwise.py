@@ -90,7 +90,6 @@ class PairwiseJudgeGrader:
             )
 
         artifacts.judge().write_json("response.json", resp.raw)
-        artifacts.judge().write_text("response.txt", resp.content)
 
         verdict = "unknown"
         score = 0.0

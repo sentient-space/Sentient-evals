@@ -37,7 +37,7 @@ class ArtifactWriter:
         (d / "agent").mkdir(parents=True, exist_ok=True)
 
     def write_trial_config(self, cfg: TrialConfig) -> Path:
-        p = self.trial_dir(cfg.trial_id) / "config.json"
+        p = self.trial_dir(cfg.trial_id) / "trial_config.json"
         _atomic_write_text(p, cfg.model_dump_json(indent=2))
         return p
 
@@ -63,7 +63,7 @@ class ArtifactWriter:
         return p
 
     def write_result(self, trial_id: str, result: TrialResult) -> Path:
-        p = self.trial_dir(trial_id) / "result.json"
+        p = self.trial_dir(trial_id) / "trial_result.json"
         _atomic_write_text(p, result.model_dump_json(indent=2))
         return p
 

@@ -5,6 +5,8 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .parsers.gemini_cli import parse_gemini_trajectory
+from ...models import TranscriptEvent
 
 
 class GeminiCliAdapter(BaseInstalledAdapter):
@@ -39,4 +41,36 @@ class GeminiCliAdapter(BaseInstalledAdapter):
                 ),
                 env=env,
             )
+            ,
+            ExecCommand(
+                cmd=(
+                    "find ~/.gemini/tmp -type f -name 'session-*.json' 2>/dev/null | "
+                    "head -n 1 | xargs -r -I{} cp {} /logs/agent/gemini-cli.trajectory.json || true"
+                ),
+                env=env,
+            ),
         ]
+
+    async def parse_run_artifacts(
+        self,
+        *,
+        task,
+        instruction: str,
+        results,
+        artifacts,
+    ) -> list[TranscriptEvent]:
+        trial_dir = artifacts.base_dir
+        agent_logs = trial_dir / "env_logs" / "agent"
+        parsed = parse_gemini_trajectory(agent_logs, instruction=instruction)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        parsed_dir = artifacts.agent().scoped("parsed")
+        parsed_dir.write_json("metrics.json", parsed.metrics)
+        if parsed.extra:
+            parsed_dir.write_json("extra.json", parsed.extra)
+        out = list(parsed.events)
+        if parsed.metrics:
+            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
+        return out

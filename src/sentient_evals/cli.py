@@ -186,9 +186,9 @@ def cancel(run_dir: Path = typer.Argument(..., exists=True, readable=True)):
 @app.command()
 def report(run_dir: Path = typer.Argument(..., exists=True, readable=True)):
     """Render a quick summary for an existing run directory."""
-    result_path = run_dir / "result.json"
+    result_path = run_dir / "run_result.json"
     if not result_path.exists():
-        raise typer.BadParameter("result.json not found")
+        raise typer.BadParameter("run_result.json not found")
     console.print_json(result_path.read_text())
 
 
@@ -204,7 +204,10 @@ def junit(
         raise typer.BadParameter("trials/ not found in run directory")
 
     trial_results = []
-    for result_path in sorted(trials_dir.glob("*/result.json")):
+    result_paths = sorted(trials_dir.glob("*/trial_result.json"))
+    if not result_paths:
+        raise typer.BadParameter("no trial_result.json files found under trials/")
+    for result_path in result_paths:
         from .models import TrialResult
 
         trial_results.append(TrialResult.model_validate_json(result_path.read_text()))
@@ -222,8 +225,15 @@ def diff(
     """
     Compare two runs (baseline vs candidate) using their result.json files.
     """
-    b = json.loads((baseline_dir / "result.json").read_text())
-    c = json.loads((candidate_dir / "result.json").read_text())
+    b_path = baseline_dir / "run_result.json"
+    if not b_path.exists():
+        raise typer.BadParameter("baseline run_result.json not found")
+    c_path = candidate_dir / "run_result.json"
+    if not c_path.exists():
+        raise typer.BadParameter("candidate run_result.json not found")
+
+    b = json.loads(b_path.read_text())
+    c = json.loads(c_path.read_text())
 
     table = Table(title="sentient-evals diff")
     table.add_column("metric")

@@ -20,6 +20,7 @@ class Severity(str, Enum):
 
 
 class ToolCall(BaseModel):
+    id: str | None = None
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
@@ -46,9 +47,11 @@ class TranscriptEvent(BaseModel):
     kind: Literal["message", "tool_call", "observation", "metric"]
     role: Literal["system", "user", "assistant"] | None = None
     content: str | None = None
+    reasoning_content: str | None = None
     tool_call: ToolCall | None = None
     observation: Any | None = None
     metrics: dict[str, float] | None = None
+    extra: dict[str, Any] | None = None
 
 
 class Outcome(BaseModel):

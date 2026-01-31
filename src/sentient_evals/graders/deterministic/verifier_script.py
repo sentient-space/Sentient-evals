@@ -83,10 +83,9 @@ class VerifierScriptGrader:
                 except Exception:
                     reward_value = None
             break
-
         artifacts.verifier().write_json(
             "reward.json",
-            {"reward": reward_value, "raw": reward_raw, "path": reward_path_used},
+            {"reward": reward_value, "path": reward_path_used},
         )
 
         if reward_value is None:
