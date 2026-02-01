@@ -29,6 +29,7 @@ class EnvironmentFactory:
         task_files_dir: Path | None = None,
         task_digest: str | None = None,
         container_image: str | None = None,
+        container_platform: str | None = None,
         docker_image_tag_prefix: str = "sentient-evals",
         daytona_snapshot_template: str | None = None,
         daytona_network_block_all: bool | None = None,
@@ -56,6 +57,7 @@ class EnvironmentFactory:
                 environment_dir=task_environment_dir,
                 task_digest=task_digest,
                 image_tag_prefix=docker_image_tag_prefix,
+                platform=container_platform,
             )
 
         if env_type == EnvironmentType.docker_sdk:
@@ -69,6 +71,7 @@ class EnvironmentFactory:
                 environment_dir=task_environment_dir,
                 task_digest=task_digest,
                 image_tag_prefix=docker_image_tag_prefix,
+                platform=container_platform,
             )
 
         if env_type == EnvironmentType.daytona:

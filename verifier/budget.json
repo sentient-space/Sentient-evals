@@ -1,0 +1,16 @@
+{
+  "limits": {
+    "tokens": 10,
+    "cost_usd": null,
+    "latency_ms": null
+  },
+  "metrics": {
+    "tokens": null,
+    "cost_usd": null,
+    "latency_ms": null
+  },
+  "failures": [],
+  "missing": [
+    "total_tokens"
+  ]
+}

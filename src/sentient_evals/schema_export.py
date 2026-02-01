@@ -16,6 +16,7 @@ from .atif.models import (
     TrajectorySchema,
 )
 from .models import (
+    GraderSpec,
     GraderResult,
     JudgeSpec,
     Outcome,
@@ -29,6 +30,7 @@ from .models import (
     ToolCall,
     TranscriptEvent,
     TrialConfig,
+    TrialSpec,
     TrialResult,
 )
 
@@ -41,6 +43,8 @@ SCHEMA_MODELS = {
     "Task": Task,
     "PromptSpec": PromptSpec,
     "JudgeSpec": JudgeSpec,
+    "GraderSpec": GraderSpec,
+    "TrialSpec": TrialSpec,
     "TrialConfig": TrialConfig,
     "GraderResult": GraderResult,
     "TrialResult": TrialResult,

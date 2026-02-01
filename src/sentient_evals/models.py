@@ -20,6 +20,7 @@ class Severity(str, Enum):
 
 
 class ToolCall(BaseModel):
+    id: str | None = None
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
@@ -46,9 +47,11 @@ class TranscriptEvent(BaseModel):
     kind: Literal["message", "tool_call", "observation", "metric"]
     role: Literal["system", "user", "assistant"] | None = None
     content: str | None = None
+    reasoning_content: str | None = None
     tool_call: ToolCall | None = None
     observation: Any | None = None
     metrics: dict[str, float] | None = None
+    extra: dict[str, Any] | None = None
 
 
 class Outcome(BaseModel):
@@ -78,6 +81,26 @@ class JudgeSpec(BaseModel):
     id: str
     version: str
     rubric: str | None = None
+
+
+class GraderSpec(BaseModel):
+    schema_version: Literal["v1"] = SCHEMA_VERSION
+    type: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    weight: float | None = None
+    required: bool = True
+
+
+class TrialSpec(BaseModel):
+    schema_version: Literal["v1"] = SCHEMA_VERSION
+    run_id: str
+    trial_id: str
+    task: Task
+    adapter: str
+    seed: int
+    attempt: int
+    graders: list[GraderSpec] = Field(default_factory=list)
+    env: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrialConfig(BaseModel):

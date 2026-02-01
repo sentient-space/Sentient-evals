@@ -54,6 +54,7 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
     env_type = str(env_cfg.get("type") or "local_python").strip()
     allow_internet = bool(env_cfg.get("allow_internet", True))
     build_timeout_sec = env_cfg.get("build_timeout_sec")
+    platform = env_cfg.get("platform")
 
     res_cfg = dict(env_cfg.get("resources") or {})
     resources = EnvironmentResources(
@@ -69,6 +70,7 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
             build_timeout_sec=build_timeout_sec,
             resources=resources,
             image=env_cfg.get("image"),
+            platform=platform,
         )
 
     lp_cfg = dict(cfg.get("local_python") or {})

@@ -71,6 +71,13 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
 - **Transcript vs outcome**: graders must be able to score either the full transcript/trajectory or the final outcome state (and often both).
 - **Noise/variance**: multi-trial is default; report confidence/variance and avoid overfitting to single-run outcomes.
 
+What can make Sentient meaningfully “more than Harbor” (and a moat)
+Technique breadth + composability: a single harness that supports many eval families (LLM-as-judge, deterministic/unit-test, rubric + tool-use constraints, budget/latency, security policies, multi-run stats, etc.) in a consistent schema.
+Managed execution: queueing, concurrency, caching, sandbox orchestration, artifact retention, reproducibility, and cost controls at scale.
+Workflow + governance: datasets/benchmarks versioning, eval baselines, regression gates for PRs, audit trails, RBAC, approvals.
+Product integration: “run eval suites on every agent change” as a first-class part of your AgentOps dashboard (telemetry + evals + deployments).
+So: we’re not inherently building a carbon copy, but we could end up there unless the SaaS layer and the “all techniques, one interface” layer become the center of gravity.
+
 ## Task list (stepwise)
 
 - [x] 1. Define public schemas + contracts
@@ -131,7 +138,7 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
   - Optional integrations (behind extras): LangChain, CrewAI, AutoGen
     - Implemented as **thin wrappers** that delegate framework-specific wiring to a user-supplied factory/runner, while recording tool usage via a shared `ToolExecutorRecorder`.
 
-- [ ] 6. Graders (baseline set)
+- [x] 6. Graders (baseline set)
   - Code-based:
     - Outcome verification (unit tests, file diffs, DB assertions)
     - Static analysis hooks (lint/type checks)
@@ -146,6 +153,70 @@ https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
     - paired comparisons for regressions
     - pass@k where applicable
     - confidence intervals / bootstrap for noisy tasks
+  - **Implementation notes**:
+    - Modular grader architecture with three tiers: deterministic (`graders/deterministic/`), model-based (`graders/judge/`), and human review (`graders/human/`).
+    - Deterministic graders: `ExactMatchGrader`, `StateCheckGrader` (with operator support: `$eq`, `$regex`, etc.), `StaticAnalysisGrader`, `ToolUsageGrader`, `VerifierScriptGrader` (Harbor-style `tests/test.sh` execution).
+    - Model-based graders: `LLMJudgeGrader` (using `JudgeClient` protocol), `MultiLLMJudgeGrader` (aggregation), `PairwiseJudgeGrader` (A/B comparison).
+    - Human graders: `HumanReviewGrader` for creating review packets.
+    - Budget graders: `BudgetGrader` for token/cost/latency limits.
+    - CLI-driven configuration: graders can be specified via `--config` (TOML/JSON) or `--graders-file` (JSON array), enabling plug-and-play grader selection without writing Python code.
+    - Environment-aware grading: `EnvironmentGrader` protocol allows graders to access the trial workspace (`env: ToolExecutor`) for outcome verification (e.g., `VerifierScriptGrader`, `StaticAnalysisGrader`).
+    - Registry system (`registry.py`) supports built-in grader types and dynamic imports via `import_path`.
+  - **Approach recap (what shipped / why)**:
+    - Graders are configured via TOML/JSON and run per-trial, writing artifacts under `trials/<trial_id>/{verifier,judge}/` for debuggability.
+    - Environment-aware graders (`VerifierScriptGrader`, `StaticAnalysisGrader`) execute inside the sandbox via `ToolExecutor`, so results reflect the final trial workspace state.
+    - Harbor-style `tests/test.sh` verifiers are supported, with a safe fallback to run via `sh` when executable bits are not preserved by host↔container copying.
+
+- [x] 6.5. Built-in adapters for common CLI agents 
+  - Ship built-in adapters for commercial CLI agents so users can run evals with only a config file (no Python glue code).
+  - Target agents (inspired by Harbor's installed agent pattern):
+    - **Claude Code** (`claude-code`): Anthropic's CLI coding agent
+    - **Codex CLI** (`codex`): OpenAI's CLI coding agent
+    - **OpenCode** (`opencode`): Open-source CLI coding agent
+    - Additional candidates: `cursor-cli`, `cline-cli`, `aider`, `gemini-cli`, `goose`, `qwen-coder`
+  - Implementation approach (Harbor-inspired):
+    - Extend `BaseInstalledAdapter` pattern (`adapters.py`) with agent-specific subclasses.
+    - Each adapter handles:
+      - Installation detection/verification (check if CLI tool is installed)
+      - Command construction (map task input to CLI invocation with proper args/env vars)
+      - Output parsing (extract transcript/outcome from CLI stdout/stderr)
+      - Model parameter passing (via CLI flags/env vars)
+    - Registry integration: register adapters in `registry.py` so they're available via `--adapter <name>` or config files.
+    - CLI convenience: users can run `sentient-evals run --tasks-dir ./tasks --adapter claude-code --model anthropic/claude-opus-4-1` without writing adapter code.
+    - Configuration via TOML/JSON:
+      ```toml
+      [adapter]
+      type = "claude-code"
+      config = { model = "anthropic/claude-opus-4-1", timeout_s = 300 }
+      ```
+    - Installation scripts: optional `install-{agent}.sh` helpers (similar to Harbor's `install-{agent-name}.sh.j2`) for CI/setup automation.
+    - Fallback behavior: if agent CLI not found, provide clear error with installation instructions.
+  - Success criteria:
+    - Users can evaluate Claude Code, Codex CLI, and OpenCode with zero Python adapter code.
+    - Adapters handle common CLI patterns (stdin/stdout, file-based I/O, environment variables for API keys).
+    - Registry auto-discovers built-in adapters; external adapters via `import_path` still supported.
+  - **Approach recap (what shipped / why)**:
+    - Implemented a Harbor-style `BaseInstalledAdapter` + per-agent subclasses with `install-*.sh` scripts, registered in `registry.py` so users can select agents via `--adapter` or config files.
+    - Docker-backed runs were hardened for real-world usage:
+      - `--jobs-dir` is resolved to an absolute path (required for Docker bind-mounts).
+      - Docker image existence checks correctly trigger builds.
+      - Container keepalive command is properly quoted so the container stays running for `exec` operations.
+    - Cursor CLI adapter was aligned with current Cursor CLI docs:
+      - Uses `agent --print` with `--api-key`/`CURSOR_API_KEY` auth, and supports Cursor-native models (e.g. `composer-1`).
+      - Supports `linux/amd64` platform override in task bundles (critical for Apple Silicon users running amd64-only agent CLIs).
+
+- [ ] 6.6. Built-in benchmarks + dataset registry (Harbor-style plug-and-play)
+  - Ship a small set of **built-in** benchmark/task packs (smoke + starter suites) and a registry mechanism for larger community datasets.
+  - UX goal: users can run evals without authoring task folders:
+    - `sentient-evals datasets list`
+    - `sentient-evals run --dataset <name>@<version> --env docker_cli --adapter cursor-cli --config eval.toml`
+    - `sentient-evals datasets pull <name>@<version>` (cache locally)
+  - Also ship a scaffolder for custom tasks (Harbor parity):
+    - `sentient-evals tasks create <task-name>` → generates `task.toml`, `instruction.md`, `environment/Dockerfile`, `tests/test.sh`
+  - Implementation sketch:
+    - `datasets/` module: registry index (JSON) + downloader (git/tarball) + local cache dir
+    - CLI commands: `datasets list/pull/path`, `tasks create`
+    - Keep the harness universal: registry is optional; local `--tasks-dir` remains supported.
 
 - [ ] 7. Reporting + aggregation
   - Aggregate over trials (mean/variance, pass@k where relevant)

@@ -15,7 +15,7 @@ from sentient_evals.task_bundles import load_task_bundles
 class FakeAdapter:
     name = "fake"
 
-    async def run(self, task: Task, *, seed: int, env):
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
         return (
             [TranscriptEvent(kind="message", role="user", content="hi")],
             Outcome(summary="ok", data={"answer": "x"}),
@@ -42,8 +42,8 @@ def test_run_suite_writes_result(tmp_path: Path):
 
     assert len(results) == 1
     assert summary.passed_trials == 1
-    assert (tmp_path / "r1" / "config.json").exists()
-    assert (tmp_path / "r1" / "result.json").exists()
+    assert (tmp_path / "r1" / "run_config.json").exists()
+    assert (tmp_path / "r1" / "run_result.json").exists()
     assert (tmp_path / "r1" / "trials" / "t1__0" / "judge").is_dir()
     assert (tmp_path / "r1" / "trials" / "t1__0" / "verifier").is_dir()
     assert (tmp_path / "r1" / "trials" / "t1__0" / "trajectory.json").exists()
@@ -168,7 +168,7 @@ def test_resume_skips_completed_trials(tmp_path: Path):
     results, _summary = asyncio.run(run_suite(tasks=tasks, adapter=FakeAdapter(), graders=[], cfg=cfg))
     # One existing + one newly executed
     assert len(results) == 2
-    assert (tmp_path / run_id / "trials" / "t1__1" / "result.json").exists()
+    assert (tmp_path / run_id / "trials" / "t1__1" / "trial_result.json").exists()
 
 
 def test_cancel_prevents_scheduling(tmp_path: Path):
@@ -187,7 +187,7 @@ def test_cancel_prevents_scheduling(tmp_path: Path):
 class ReadsWorkspaceAdapter:
     name = "reads_workspace"
 
-    async def run(self, task: Task, *, seed: int, env):
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
         txt = await env.read_file("hello.txt")
         return (
             [TranscriptEvent(kind="message", role="user", content=task.id)],
@@ -229,7 +229,9 @@ def test_run_suite_bundles_local_python(tmp_path: Path):
     )
     assert len(results) == 1
 
-    trial_cfg = json.loads((tmp_path / "r1" / "trials" / "t1__0" / "config.json").read_text(encoding="utf-8"))
+    trial_cfg = json.loads(
+        (tmp_path / "r1" / "trials" / "t1__0" / "trial_config.json").read_text(encoding="utf-8")
+    )
     assert trial_cfg["provenance"]["env_type"] == "local_python"
     assert trial_cfg["provenance"]["task_bundle_digest"] == bundles[0].digest
 

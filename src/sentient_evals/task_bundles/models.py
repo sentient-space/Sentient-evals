@@ -30,6 +30,7 @@ class LocalPythonEnvironmentSpec(BaseEnvironmentSpec):
 class ContainerEnvironmentSpec(BaseEnvironmentSpec):
     type: Literal["container"] = "container"
     image: str | None = None
+    platform: str | None = None
 
 
 EnvironmentSpec = LocalPythonEnvironmentSpec | ContainerEnvironmentSpec

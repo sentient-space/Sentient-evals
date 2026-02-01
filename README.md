@@ -6,7 +6,7 @@
 
 - Run **tasks** concurrently with **multiple trials** to reduce variance.
 - Capture **trajectories (ATIF)** and **outcomes** (final environment state).
-- Support **code-based graders** (tests, static checks, tool-call verification) and **model-based graders** (LLM-as-judge, multi-judge voting + calibration).
+- Support **code-based graders** (tests, static checks, tool-call verification), **model-based graders** (LLM-as-judge, multi-judge voting + calibration), and **human review** hooks for calibration.
 - Produce a **Harbor-style jobs directory** for debuggability.
 - Keep the core harness framework-agnostic; integrate frameworks via adapters.
 
@@ -29,6 +29,65 @@ pip install "sentient-evals[llm]"
 ```bash
 sentient-evals --help
 sentient-evals run --help
+```
+
+### Installed CLI agents (Harbor-style)
+
+Built-in installed adapters (run via `--adapter <name>`) mirror Harbor's CLI agents:
+
+- `claude-code`
+- `codex`
+- `opencode`
+- `cursor-cli`
+- `cline-cli`
+- `gemini-cli`
+- `goose`
+- `qwen-coder`
+- `openhands`
+- `swe-agent`
+- `mini-swe-agent`
+- `aider`
+
+These adapters install the CLI inside the trial environment at runtime .
+For sandboxed runs, use Docker or Daytona environments so the agent can be installed
+in an isolated container.
+
+### Plug-and-play graders via config
+
+For real evaluations, pass an adapter and grader config (TOML or JSON). The CLI can also default to `verifier_script` for task bundles when `tests/test.sh` exists.
+
+### Plug-and-play custom agents via --agent-file
+
+If you have a local Python agent (LangChain, CrewAI, custom loop, etc.), you can point the CLI at a file without packaging your repo:
+
+```bash
+sentient-evals run --tasks-dir ./tasks --env local_python --agent-file ./path/to/agent.py:my_agent --config eval.toml
+```
+
+The `:my_agent` attribute can be:
+- an adapter object with an async `run(task, instruction, seed, env, artifacts)` method
+- a factory function that returns such an adapter
+- a plain function (sync/async) that returns `dict`/`str` (it will be wrapped automatically)
+
+Example (TOML):
+
+```toml
+[adapter]
+type = "import"
+import_path = "my_project.my_adapter:build_adapter"
+
+[[graders]]
+type = "verifier_script"
+
+[[graders]]
+type = "static_analysis"
+config = { checks = [{ name = "ruff", cmd = "ruff check ." }] }
+```
+
+Run:
+
+```bash
+sentient-evals run --tasks-dir path/to/tasks --env docker_cli --config eval.toml --concurrency 4
 ```
 
 ## Task bundles (directory format)
@@ -55,6 +114,10 @@ Supported `--env` values:
 - `docker_sdk` (requires `sentient-evals[docker]`)
 - `podman_cli` (requires `podman` installed)
 - `daytona` (requires `sentient-evals[daytona]` and Daytona configured)
+
+Notes:
+- Docker-based runs require Docker (or Podman) installed and running.
+- For parallel sandboxed evals, prefer `docker_cli` locally or `daytona` in the cloud.
 
 ## Output layout (local runs)
 

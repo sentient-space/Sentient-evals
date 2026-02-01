@@ -11,36 +11,45 @@ from rich.console import Console
 from rich.table import Table
 
 from .environments.base import EnvironmentType
-from .graders import ExactMatchGrader
+from .agent_file import load_agent_adapter_from_file, parse_agent_file_ref
+from .config_files import load_run_spec
 from .models import SuiteConfig, Task
 from .junit import JUnitExportConfig, trials_to_junit_xml
 from .schema_export import export_json_schemas
 from .runner import RunConfig, run_suite, run_suite_bundles
 from .task_bundles import load_task_bundles
+from .registry import build_adapter, build_grader
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 
-
-class JSONEchoAdapter:
-    name = "json_echo"
-
-    async def run(self, task: Task, *, seed: int, env):
-        # Minimal scaffold adapter: returns the input payload as outcome.
-        # Real integrations should implement AgentAdapter wrappers (LangChain/CrewAI/custom loops).
-        from .models import Outcome, TranscriptEvent
-
-        transcript = [
-            TranscriptEvent(kind="message", role="user", content=json.dumps(task.input)),
-            TranscriptEvent(kind="message", role="assistant", content="(adapter scaffold)"),
-        ]
-        return transcript, Outcome(summary="echo", data=task.input)
+_BUILTIN_ADAPTERS = {
+    "workflow_stub",
+    "example_installed",
+    "aider",
+    "claude-code",
+    "codex",
+    "cursor-cli",
+    "cline-cli",
+    "gemini-cli",
+    "goose",
+    "mini-swe-agent",
+    "opencode",
+    "openhands",
+    "qwen-coder",
+    "swe-agent",
+}
 
 
 @app.command()
 def run(
     tasks_path: Optional[Path] = typer.Option(None, "--tasks", exists=True, readable=True),
     tasks_dir: Optional[Path] = typer.Option(None, "--tasks-dir", exists=True, readable=True),
+    config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
+    graders_file: Optional[Path] = typer.Option(None, "--graders-file", exists=True, readable=True),
+    agent_file: Optional[str] = typer.Option(None, "--agent-file"),
+    adapter: Optional[str] = typer.Option(None, "--adapter"),
+    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs"),
     jobs_dir: Path = typer.Option(Path("jobs"), "--jobs-dir"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     suite_id: str = typer.Option("default", "--suite-id"),
@@ -66,23 +75,69 @@ def run(
     if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
         raise typer.BadParameter("--env only supports local_python when using --tasks")
 
-    suite = SuiteConfig(
-        id=suite_id,
-        trials_per_task=trials_per_task,
-        concurrency=concurrency,
-        seeds=[seed] if seed is not None else None,
+    spec = load_run_spec(config) if config is not None else None
+    suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
+    suite = suite.model_copy(
+        update={
+            "id": suite_id,
+            "trials_per_task": trials_per_task,
+            "concurrency": concurrency,
+            "seeds": [seed] if seed is not None else suite.seeds,
+        }
     )
 
-    adapter = JSONEchoAdapter()
-    graders = [ExactMatchGrader(expected="")]  # scaffold; replace with real graders per-suite
+    if agent_file is not None:
+        try:
+            ref = parse_agent_file_ref(agent_file)
+            adapter_obj = load_agent_adapter_from_file(ref)
+        except Exception as exc:
+            raise typer.BadParameter(f"--agent-file invalid: {exc}") from exc
+    elif adapter is not None:
+        if adapter in _BUILTIN_ADAPTERS:
+            adapter_type = adapter
+            import_path = None
+        else:
+            adapter_type = "import"
+            import_path = adapter
+        kwargs = json.loads(adapter_kwargs) if adapter_kwargs else {}
+        adapter_obj = build_adapter(adapter_type=adapter_type, import_path=import_path, kwargs=kwargs)
+    elif spec is not None:
+        adapter_obj = build_adapter(
+            adapter_type=spec.adapter.type, import_path=spec.adapter.import_path, kwargs=spec.adapter.kwargs
+        )
+    else:
+        raise typer.BadParameter("Provide --agent-file, --config, or --adapter to select an adapter")
+
+    grader_specs: list[dict] = []
+    if graders_file is not None:
+        parsed = json.loads(graders_file.read_text(encoding="utf-8"))
+        if not isinstance(parsed, list):
+            raise typer.BadParameter("--graders-file must contain a JSON array of grader specs")
+        grader_specs = parsed
+    elif spec is not None:
+        grader_specs = spec.graders
+    elif tasks_dir is not None:
+        has_test_sh = any(tasks_dir.rglob("tests/test.sh"))
+        if not has_test_sh:
+            raise typer.BadParameter(
+                "No graders specified and no tests/test.sh found in --tasks-dir. "
+                "Provide --config/--graders-file or add tests/test.sh verifiers."
+            )
+        grader_specs = [{"type": "verifier_script", "config": {}}]
+    else:
+        raise typer.BadParameter("Provide --graders-file or --config (graders) when using --tasks")
+
+    graders = [build_grader(s) for s in grader_specs]
     if run_id is None:
         run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S")
+
+    jobs_dir = jobs_dir.expanduser().resolve()
     env_type = EnvironmentType(env.lower())
     cfg = RunConfig(
         run_id=run_id,
         suite=suite,
         jobs_dir=jobs_dir,
-        adapter_name=adapter.name,
+        adapter_name=getattr(adapter_obj, "name", "adapter"),
         mode="resume" if resume else "fresh",
         replay_mode=replay_mode.lower(),  # type: ignore[arg-type]
         env_type=env_type,
@@ -93,12 +148,14 @@ def run(
 
     if tasks_dir is not None:
         bundles = load_task_bundles(tasks_dir)
-        results, summary = asyncio.run(run_suite_bundles(bundles=bundles, adapter=adapter, graders=graders, cfg=cfg))
+        results, summary = asyncio.run(
+            run_suite_bundles(bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg)
+        )
     else:
         assert tasks_path is not None
         tasks_raw = json.loads(tasks_path.read_text())
         tasks = [Task(**t) for t in tasks_raw]
-        results, summary = asyncio.run(run_suite(tasks=tasks, adapter=adapter, graders=graders, cfg=cfg))
+        results, summary = asyncio.run(run_suite(tasks=tasks, adapter=adapter_obj, graders=graders, cfg=cfg))
 
     table = Table(title=f"sentient-evals: {summary.run_id}")
     table.add_column("trial")
@@ -129,9 +186,9 @@ def cancel(run_dir: Path = typer.Argument(..., exists=True, readable=True)):
 @app.command()
 def report(run_dir: Path = typer.Argument(..., exists=True, readable=True)):
     """Render a quick summary for an existing run directory."""
-    result_path = run_dir / "result.json"
+    result_path = run_dir / "run_result.json"
     if not result_path.exists():
-        raise typer.BadParameter("result.json not found")
+        raise typer.BadParameter("run_result.json not found")
     console.print_json(result_path.read_text())
 
 
@@ -147,7 +204,10 @@ def junit(
         raise typer.BadParameter("trials/ not found in run directory")
 
     trial_results = []
-    for result_path in sorted(trials_dir.glob("*/result.json")):
+    result_paths = sorted(trials_dir.glob("*/trial_result.json"))
+    if not result_paths:
+        raise typer.BadParameter("no trial_result.json files found under trials/")
+    for result_path in result_paths:
         from .models import TrialResult
 
         trial_results.append(TrialResult.model_validate_json(result_path.read_text()))
@@ -165,8 +225,15 @@ def diff(
     """
     Compare two runs (baseline vs candidate) using their result.json files.
     """
-    b = json.loads((baseline_dir / "result.json").read_text())
-    c = json.loads((candidate_dir / "result.json").read_text())
+    b_path = baseline_dir / "run_result.json"
+    if not b_path.exists():
+        raise typer.BadParameter("baseline run_result.json not found")
+    c_path = candidate_dir / "run_result.json"
+    if not c_path.exists():
+        raise typer.BadParameter("candidate run_result.json not found")
+
+    b = json.loads(b_path.read_text())
+    c = json.loads(c_path.read_text())
 
     table = Table(title="sentient-evals diff")
     table.add_column("metric")
