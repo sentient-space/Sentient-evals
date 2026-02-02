@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion, Version
 
+from ..tasks_client import TaskClient
+
 if TYPE_CHECKING:
     from ..models import DatasetSpec, DownloadedTask
 
@@ -80,8 +82,6 @@ class BaseRegistryClient(ABC):
         overwrite: bool = False,
     ) -> list["DownloadedTask"]:
         """Download all tasks in a dataset to local cache."""
-        from ..tasks_client import TaskClient
-
         spec = self.get_dataset_spec(name, version)
         task_client = TaskClient()
         return task_client.download_tasks(
