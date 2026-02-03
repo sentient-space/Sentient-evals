@@ -1,20 +1,22 @@
-"""Factory for creating registry clients."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .base import BaseRegistryClient
+from .github import GitHubRegistryClient
 from .json import JsonRegistryClient
 
 
 class RegistryClientFactory:
-    """Factory for creating appropriate registry client instances."""
 
     @staticmethod
     def create(
         registry_url: str | None = None,
         registry_path: Path | None = None,
+        use_default: bool = False,
+        github_token: str | None = None,
     ) -> BaseRegistryClient:
         """
         Create a registry client based on configuration.
@@ -22,6 +24,8 @@ class RegistryClientFactory:
         Args:
             registry_url: URL to a remote registry.json file
             registry_path: Path to a local registry.json file
+            use_default: If True and no other source provided, use default GitHub registry
+            github_token: Optional GitHub token for higher rate limits (5000/hour vs 60/hour)
 
         Returns:
             Configured registry client instance
@@ -34,6 +38,10 @@ class RegistryClientFactory:
 
         if registry_url is not None:
             return JsonRegistryClient(url=registry_url)
+
+        if use_default:
+            token = github_token or os.environ.get("GITHUB_TOKEN")
+            return GitHubRegistryClient(token=token)
 
         raise ValueError(
             "No registry source specified. "

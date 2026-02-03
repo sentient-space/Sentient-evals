@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+import getpass
 
 import typer
 from rich.console import Console
@@ -20,6 +23,8 @@ from .runner import RunConfig, run_suite, run_suite_bundles
 from .task_bundles import load_task_bundles
 from .registry import build_adapter, build_grader
 from .datasets import DatasetClient, RegistryClientFactory
+from .prompts import select_adapter, select_dataset, select_environment, prompt_model_name, prompt_github_token
+from .config import get_github_token, save_github_token, clear_github_token, CONFIG_FILE
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -29,6 +34,9 @@ app.add_typer(datasets_app, name="datasets")
 
 tasks_app = typer.Typer(no_args_is_help=True)
 app.add_typer(tasks_app, name="tasks")
+
+auth_app = typer.Typer(no_args_is_help=True)
+app.add_typer(auth_app, name="auth")
 
 _BUILTIN_ADAPTERS = {
     "workflow_stub",
@@ -69,7 +77,7 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: str = typer.Option(..., "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
+    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),
@@ -77,6 +85,19 @@ def run(
     """
     Run an eval suite from tasks JSON, task bundles directory, or registry dataset.
     """
+    if adapter is None and agent_file is None and config is None:
+        adapter = select_adapter()
+        if adapter is None:
+            raise typer.Abort()
+
+    if model is None and adapter is not None and adapter in _BUILTIN_ADAPTERS:
+        model = prompt_model_name(adapter)
+
+    if env is None:
+        env = select_environment()
+        if env is None:
+            raise typer.Abort()
+
     source_count = sum([tasks_path is not None, tasks_dir is not None, dataset is not None])
     if source_count != 1:
         raise typer.BadParameter("Provide exactly one of --tasks, --tasks-dir, or --dataset")
@@ -287,13 +308,18 @@ def datasets_list(
     registry_url: Optional[str] = typer.Option(None, "--registry-url"),
     registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True),
 ):
-    """List all datasets available in a registry."""
+    """List all datasets available in a registry (defaults to GitHub harbor-datasets)."""
+    github_token = None
     if registry_url is None and registry_path is None:
-        raise typer.BadParameter("Provide --registry-url or --registry-path")
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token is None and sys.stdin.isatty():
+            github_token = prompt_github_token()
 
     client = RegistryClientFactory.create(
         registry_url=registry_url,
         registry_path=registry_path,
+        use_default=True,
+        github_token=github_token,
     )
     datasets = client.get_datasets()
 
@@ -307,31 +333,55 @@ def datasets_list(
     table.add_column("Tasks", style="green", justify="right")
     table.add_column("Description", style="white")
 
+    has_unknown_counts = False
     for ds in sorted(datasets, key=lambda d: (d.name, d.version)):
-        table.add_row(ds.name, ds.version, str(ds.task_count), ds.description[:60])
+        if ds.task_count == 0:
+            task_str = "—"
+            has_unknown_counts = True
+        else:
+            task_str = str(ds.task_count)
+        table.add_row(ds.name, ds.version, task_str, ds.description[:60])
 
     console.print(table)
     console.print(f"\n[green]Total: {len(datasets)} dataset(s)[/green]")
 
+    if has_unknown_counts and github_token is None:
+        console.print(
+            "\n[dim]Tip: Set GITHUB_TOKEN env var to see task counts "
+            "(avoids rate limits)[/dim]"
+        )
+
 
 @datasets_app.command("pull")
 def datasets_pull(
-    dataset: str = typer.Argument(..., help="Dataset in format 'name@version' or 'name'"),
+    dataset: Optional[str] = typer.Argument(None, help="Dataset in format 'name@version' or 'name'"),
     registry_url: Optional[str] = typer.Option(None, "--registry-url"),
     registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True),
     output_dir: Optional[Path] = typer.Option(None, "-o", "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
 ):
-    """Download a dataset from a registry."""
+    """Download a dataset from a registry (defaults to GitHub harbor-datasets)."""
+    github_token = None
     if registry_url is None and registry_path is None:
-        raise typer.BadParameter("Provide --registry-url or --registry-path")
-
-    name, version = (dataset.split("@", 1) + [None])[:2]
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token is None and sys.stdin.isatty():
+            github_token = prompt_github_token()
 
     client = RegistryClientFactory.create(
         registry_url=registry_url,
         registry_path=registry_path,
+        use_default=True,
+        github_token=github_token,
     )
+
+    if dataset is None:
+        datasets = client.get_datasets()
+        selected = select_dataset(datasets)
+        if selected is None:
+            raise typer.Abort()
+        dataset = selected.get_qualified_name()
+
+    name, version = (dataset.split("@", 1) + [None])[:2]
 
     console.print(f"[cyan]Downloading dataset: {name} (version: {version or 'latest'})[/cyan]")
 
@@ -417,3 +467,69 @@ def tasks_create(
     console.print(f"  {task_dir}/task.toml")
     console.print(f"  {task_dir}/environment/Dockerfile")
     console.print(f"  {task_dir}/tests/test.sh")
+
+
+
+@auth_app.command("login")
+def auth_login():
+    """Save GitHub token for authenticated API access."""
+   
+    
+    existing = get_github_token()
+    if existing:
+        console.print(f"[yellow]Already logged in.[/yellow] Token saved in {CONFIG_FILE}")
+        console.print("Run 'sentient-evals auth logout' to remove it first.")
+        return
+    
+    console.print(
+        "[bold]GitHub token setup[/bold]\n"
+        "This token enables full API access (5000 requests/hour).\n"
+        "Generate one at: https://github.com/settings/tokens\n"
+        "Required scope: public_repo\n"
+    )
+    
+    token = getpass.getpass("Paste your GitHub token: ")
+    token = token.strip()
+    
+    if not token:
+        console.print("[yellow]No token provided. Cancelled.[/yellow]")
+        raise typer.Exit(1)
+    
+    if not token.startswith(("ghp_", "github_pat_")):
+        console.print("[yellow]Warning: Token doesn't look like a GitHub token, but saving anyway.[/yellow]")
+    
+    save_github_token(token)
+    console.print(f"[green]✓ Token saved to {CONFIG_FILE}[/green]")
+    console.print("[dim]Token permissions: owner read/write only (chmod 600)[/dim]")
+
+
+@auth_app.command("logout")
+def auth_logout():
+    """Remove saved GitHub token."""
+    existing = get_github_token()
+    if not existing:
+        console.print("[yellow]Not logged in. No token to remove.[/yellow]")
+        return
+    
+    clear_github_token()
+    console.print(f"[green]✓ Token removed from {CONFIG_FILE}[/green]")
+
+
+@auth_app.command("status")
+def auth_status():
+    """Show authentication status."""
+    env_token = os.environ.get("GITHUB_TOKEN")
+    saved_token = get_github_token()
+    
+    if env_token:
+        console.print("[green]✓ Authenticated via GITHUB_TOKEN environment variable[/green]")
+        console.print(f"  Token: {env_token[:8]}...{env_token[-4:]}")
+    elif saved_token:
+        console.print(f"[green]✓ Authenticated via saved token[/green]")
+        console.print(f"  Config: {CONFIG_FILE}")
+        console.print(f"  Token: {saved_token[:8]}...{saved_token[-4:]}")
+    else:
+        console.print("[yellow]✗ Not authenticated[/yellow]")
+        console.print("  Run 'sentient-evals auth login' to authenticate")
+        console.print("  Or set GITHUB_TOKEN environment variable")
+
