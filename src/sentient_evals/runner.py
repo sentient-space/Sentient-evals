@@ -481,9 +481,8 @@ async def run_suite_bundles(
                 build_timeout_sec=bundle.env.build_timeout_sec,
             )
 
+
             env_type = cfg.env_type
-            if bundle.env.type == "local_python":
-                env_type = EnvironmentType.local_python
             container_image = None
             if getattr(bundle.env, "type", None) == "container":
                 container_image = getattr(bundle.env, "image", None)
@@ -542,9 +541,9 @@ async def run_suite_bundles(
                 if bundle.files_dir is not None and bundle.files_dir.exists():
                     await environment.upload_dir(bundle.files_dir, ".")
                 if bundle.tests_dir is not None and bundle.tests_dir.exists():
-                    await environment.upload_dir(bundle.tests_dir, "tests")
+                    await environment.upload_dir(bundle.tests_dir, "/tests")
                     
-                    await environment.exec("sh -lc 'chmod +x ./tests/test.sh 2>/dev/null || true'")
+                    await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
 
                 artifacts = TrialArtifacts(writer.trial_dir(trial_id))
                 transcript, outcome = await _call_adapter(

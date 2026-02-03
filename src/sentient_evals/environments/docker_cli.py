@@ -63,10 +63,27 @@ class DockerCLIEnvironment(BaseEnvironment):
         unique = uuid.uuid4().hex[:8]
         self._container_name = f"sentient-evals__{self._sanitize_id(trial_id)}__{unique}"
         self._image = None
+        self.tests_dir = workspace_dir.parent / "tests"
+        self._workdir = self._parse_workdir()
+
+    def _parse_workdir(self) -> str:
+        """Extract WORKDIR from task Dockerfile. Defaults to /app."""
+        if self.environment_dir is None:
+            return "/app"
+        dockerfile = self.environment_dir / "Dockerfile"
+        if not dockerfile.exists():
+            return "/app"
+        try:
+            content = dockerfile.read_text()
+            matches = re.findall(r'^WORKDIR\s+([^\s#]+)', content, re.MULTILINE)
+            return matches[-1].rstrip('/') if matches else "/app"
+        except Exception:
+            return "/app"
 
     async def start(self, *, force_build: bool = False) -> None:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.tests_dir.mkdir(parents=True, exist_ok=True)
 
         await self._ensure_engine_available()
         image = await self._ensure_image(force_build=force_build)
@@ -75,8 +92,9 @@ class DockerCLIEnvironment(BaseEnvironment):
         await _host_exec(f"{self.engine} rm -f {shlex.quote(self._container_name)} >/dev/null 2>&1 || true")
 
         mounts = [
-            f"-v {shlex.quote(str(self.workspace_dir))}:/workspace",
+            f"-v {shlex.quote(str(self.workspace_dir))}:{self._workdir}",
             f"-v {shlex.quote(str(self.logs_dir))}:/logs",
+            f"-v {shlex.quote(str(self.tests_dir))}:/tests",
         ]
         opts = ["-d", "--name", shlex.quote(self._container_name)]
         if self.platform:
@@ -100,13 +118,11 @@ class DockerCLIEnvironment(BaseEnvironment):
                 shlex.quote(image),
                 "sh",
                 "-lc",
-                # Must be quoted as a single `sh -c` argument (we use shell=True).
                 shlex.quote("tail -f /dev/null"),
             ]
         )
         res = await _host_exec(cmd, timeout_s=self.config.build_timeout_sec)
         if res.exit_code != 0:
-            # Persist host-side debug info for container lifecycle issues.
             try:
                 (self.logs_dir / "docker_run_command.txt").write_text(cmd + "\n", encoding="utf-8")
                 (self.logs_dir / "docker_run_stdout.txt").write_text(res.stdout or "", encoding="utf-8")
@@ -149,7 +165,6 @@ class DockerCLIEnvironment(BaseEnvironment):
 
     async def stop(self, *, delete: bool = True) -> None:
         if delete:
-            # Best-effort capture before deletion to help diagnose failures.
             try:
                 insp = await _host_exec(
                     f"{self.engine} inspect {shlex.quote(self._container_name)} "
@@ -171,7 +186,7 @@ class DockerCLIEnvironment(BaseEnvironment):
     async def exec(self, cmd: str, *, timeout_s: float | None = None) -> ExecResult:
         qcmd = shlex.quote(cmd)
         full = (
-            f"{self.engine} exec -w /workspace {shlex.quote(self._container_name)} "
+            f"{self.engine} exec -w {shlex.quote(self._workdir)} {shlex.quote(self._container_name)} "
             f"sh -lc {qcmd}"
         )
         r = await _host_exec(full, timeout_s=timeout_s)
@@ -188,7 +203,23 @@ class DockerCLIEnvironment(BaseEnvironment):
         target.write_bytes(source_path.read_bytes())
 
     async def upload_dir(self, source_dir: Path, target_dir: str) -> None:
-        dst = (self.workspace_dir / target_dir).resolve()
+        # Map container absolute paths to host directories
+        if target_dir.startswith("/tests"):
+            base = self.tests_dir
+            rel_path = target_dir[6:].lstrip("/")  # Strip '/tests' prefix
+            dst = (base / rel_path).resolve() if rel_path else base
+        elif target_dir.startswith("/logs"):
+            base = self.logs_dir
+            rel_path = target_dir[5:].lstrip("/")  # Strip '/logs' prefix
+            dst = (base / rel_path).resolve() if rel_path else base
+        elif target_dir.startswith(self._workdir):
+            # Handle dynamic workdir (e.g., /app, /testbed, /workspace)
+            prefix_len = len(self._workdir)
+            rel_path = target_dir[prefix_len:].lstrip("/")
+            dst = (self.workspace_dir / rel_path).resolve() if rel_path else self.workspace_dir
+        else:
+            # Relative paths are relative to workspace
+            dst = (self.workspace_dir / target_dir).resolve()
         dst.mkdir(parents=True, exist_ok=True)
         for p in sorted(source_dir.rglob("*")):
             rel = p.relative_to(source_dir)

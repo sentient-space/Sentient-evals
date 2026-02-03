@@ -205,7 +205,7 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
       - Uses `agent --print` with `--api-key`/`CURSOR_API_KEY` auth, and supports Cursor-native models (e.g. `composer-1`).
       - Supports `linux/amd64` platform override in task bundles (critical for Apple Silicon users running amd64-only agent CLIs).
 
-- [ ] 6.6. Built-in benchmarks + dataset registry (Harbor-style plug-and-play)
+- [x] 6.6. Built-in benchmarks + dataset registry (Harbor-style plug-and-play)
   - Ship a small set of **built-in** benchmark/task packs (smoke + starter suites) and a registry mechanism for larger community datasets.
   - UX goal: users can run evals without authoring task folders:
     - `sentient-evals datasets list`
@@ -217,6 +217,7 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
     - `datasets/` module: registry index (JSON) + downloader (git/tarball) + local cache dir
     - CLI commands: `datasets list/pull/path`, `tasks create`
     - Keep the harness universal: registry is optional; local `--tasks-dir` remains supported.
+  - **Done**: `datasets list/pull/path` + `tasks create` implemented. Docker environment dynamically detects WORKDIR from task Dockerfiles for Harbor compatibility (`/app`, `/testbed`, `/workspace`). Tests mounted at `/tests`, logs at `/logs`.
 
 - [ ] 7. Reporting + aggregation
   - Aggregate over trials (mean/variance, pass@k where relevant)

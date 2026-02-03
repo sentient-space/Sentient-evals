@@ -19,9 +19,16 @@ from .schema_export import export_json_schemas
 from .runner import RunConfig, run_suite, run_suite_bundles
 from .task_bundles import load_task_bundles
 from .registry import build_adapter, build_grader
+from .datasets import DatasetClient, RegistryClientFactory
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
+
+datasets_app = typer.Typer(no_args_is_help=True)
+app.add_typer(datasets_app, name="datasets")
+
+tasks_app = typer.Typer(no_args_is_help=True)
+app.add_typer(tasks_app, name="tasks")
 
 _BUILTIN_ADAPTERS = {
     "workflow_stub",
@@ -45,11 +52,15 @@ _BUILTIN_ADAPTERS = {
 def run(
     tasks_path: Optional[Path] = typer.Option(None, "--tasks", exists=True, readable=True),
     tasks_dir: Optional[Path] = typer.Option(None, "--tasks-dir", exists=True, readable=True),
+    dataset: Optional[str] = typer.Option(None, "--dataset", "-d", help="Dataset name@version from registry"),
+    registry_url: Optional[str] = typer.Option(None, "--registry-url", help="Registry URL for --dataset"),
+    registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True, help="Registry path for --dataset"),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
     graders_file: Optional[Path] = typer.Option(None, "--graders-file", exists=True, readable=True),
     agent_file: Optional[str] = typer.Option(None, "--agent-file"),
-    adapter: Optional[str] = typer.Option(None, "--adapter"),
-    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs"),
+    adapter: Optional[str] = typer.Option(None, "--adapter", "-a", help="Adapter name (gemini-cli, claude-code, etc.) or import path"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model name (e.g., google/gemini-2.0-flash)"),
+    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs", help="JSON dict of additional adapter kwargs"),
     jobs_dir: Path = typer.Option(Path("jobs"), "--jobs-dir"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     suite_id: str = typer.Option("default", "--suite-id"),
@@ -58,22 +69,32 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: str = typer.Option("local_python", "--env", case_sensitive=False),
+    env: str = typer.Option(..., "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),
 ):
     """
-    Run a local eval suite from a tasks JSON file or a task bundles directory.
-
-    tasks JSON format:
-      [{"id": "...", "input": {...}, "metadata": {...}}]
+    Run an eval suite from tasks JSON, task bundles directory, or registry dataset.
     """
-
-    if (tasks_path is None) == (tasks_dir is None):
-        raise typer.BadParameter("Provide exactly one of --tasks or --tasks-dir")
+    source_count = sum([tasks_path is not None, tasks_dir is not None, dataset is not None])
+    if source_count != 1:
+        raise typer.BadParameter("Provide exactly one of --tasks, --tasks-dir, or --dataset")
     if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
         raise typer.BadParameter("--env only supports local_python when using --tasks")
+    if dataset is not None and registry_url is None and registry_path is None:
+        raise typer.BadParameter("--dataset requires --registry-url or --registry-path")
+
+    dataset_tasks_dir: Optional[Path] = None
+    if dataset is not None:
+        name, version = (dataset.split("@", 1) + [None])[:2]
+        client = RegistryClientFactory.create(registry_url=registry_url, registry_path=registry_path)
+        console.print(f"[cyan]Downloading dataset: {name}@{version or 'latest'}[/cyan]")
+        downloaded = client.download_dataset(name, version)
+        if not downloaded:
+            raise typer.BadParameter(f"Dataset '{dataset}' has no tasks")
+        dataset_tasks_dir = downloaded[0].local_path.parent
+        console.print(f"[green]Downloaded {len(downloaded)} task(s) to {dataset_tasks_dir}[/green]")
 
     spec = load_run_spec(config) if config is not None else None
     suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
@@ -100,6 +121,8 @@ def run(
             adapter_type = "import"
             import_path = adapter
         kwargs = json.loads(adapter_kwargs) if adapter_kwargs else {}
+        if model is not None:
+            kwargs["model_name"] = model
         adapter_obj = build_adapter(adapter_type=adapter_type, import_path=import_path, kwargs=kwargs)
     elif spec is not None:
         adapter_obj = build_adapter(
@@ -116,11 +139,13 @@ def run(
         grader_specs = parsed
     elif spec is not None:
         grader_specs = spec.graders
-    elif tasks_dir is not None:
-        has_test_sh = any(tasks_dir.rglob("tests/test.sh"))
+    elif tasks_dir is not None or dataset_tasks_dir is not None:
+        effective_dir = tasks_dir or dataset_tasks_dir
+        assert effective_dir is not None
+        has_test_sh = any(effective_dir.rglob("tests/test.sh"))
         if not has_test_sh:
             raise typer.BadParameter(
-                "No graders specified and no tests/test.sh found in --tasks-dir. "
+                "No graders specified and no tests/test.sh found. "
                 "Provide --config/--graders-file or add tests/test.sh verifiers."
             )
         grader_specs = [{"type": "verifier_script", "config": {}}]
@@ -146,8 +171,10 @@ def run(
         daytona_network_block_all=daytona_network_block_all,
     )
 
-    if tasks_dir is not None:
-        bundles = load_task_bundles(tasks_dir)
+    if tasks_dir is not None or dataset_tasks_dir is not None:
+        effective_dir = tasks_dir or dataset_tasks_dir
+        assert effective_dir is not None
+        bundles = load_task_bundles(effective_dir)
         results, summary = asyncio.run(
             run_suite_bundles(bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg)
         )
@@ -254,3 +281,139 @@ def schema_export(out_dir: Path = typer.Option(Path("schemas/v1"), "--out-dir"))
     written = export_json_schemas(out_dir)
     console.print(f"Wrote {len(written)} schemas to {out_dir}")
 
+
+@datasets_app.command("list")
+def datasets_list(
+    registry_url: Optional[str] = typer.Option(None, "--registry-url"),
+    registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True),
+):
+    """List all datasets available in a registry."""
+    if registry_url is None and registry_path is None:
+        raise typer.BadParameter("Provide --registry-url or --registry-path")
+
+    client = RegistryClientFactory.create(
+        registry_url=registry_url,
+        registry_path=registry_path,
+    )
+    datasets = client.get_datasets()
+
+    if not datasets:
+        console.print("[yellow]No datasets found[/yellow]")
+        return
+
+    table = Table(title="Available Datasets", show_lines=True)
+    table.add_column("Name", style="cyan")
+    table.add_column("Version", style="magenta")
+    table.add_column("Tasks", style="green", justify="right")
+    table.add_column("Description", style="white")
+
+    for ds in sorted(datasets, key=lambda d: (d.name, d.version)):
+        table.add_row(ds.name, ds.version, str(ds.task_count), ds.description[:60])
+
+    console.print(table)
+    console.print(f"\n[green]Total: {len(datasets)} dataset(s)[/green]")
+
+
+@datasets_app.command("pull")
+def datasets_pull(
+    dataset: str = typer.Argument(..., help="Dataset in format 'name@version' or 'name'"),
+    registry_url: Optional[str] = typer.Option(None, "--registry-url"),
+    registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True),
+    output_dir: Optional[Path] = typer.Option(None, "-o", "--output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+):
+    """Download a dataset from a registry."""
+    if registry_url is None and registry_path is None:
+        raise typer.BadParameter("Provide --registry-url or --registry-path")
+
+    name, version = (dataset.split("@", 1) + [None])[:2]
+
+    client = RegistryClientFactory.create(
+        registry_url=registry_url,
+        registry_path=registry_path,
+    )
+
+    console.print(f"[cyan]Downloading dataset: {name} (version: {version or 'latest'})[/cyan]")
+
+    try:
+        downloaded = client.download_dataset(
+            name=name,
+            version=version,
+            output_dir=output_dir,
+            overwrite=overwrite,
+        )
+        console.print(f"[green]Downloaded {len(downloaded)} task(s)[/green]")
+        for task in downloaded[:5]:
+            console.print(f"  {task.local_path}")
+        if len(downloaded) > 5:
+            console.print(f"  ... and {len(downloaded) - 5} more")
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@datasets_app.command("path")
+def datasets_path(
+    dataset: str = typer.Argument(..., help="Dataset in format 'name@version' or 'name'"),
+    registry_url: Optional[str] = typer.Option(None, "--registry-url"),
+    registry_path: Optional[Path] = typer.Option(None, "--registry-path", exists=True),
+):
+    """Show the cached path for a downloaded dataset."""
+    if registry_url is None and registry_path is None:
+        raise typer.BadParameter("Provide --registry-url or --registry-path")
+
+    name, version = (dataset.split("@", 1) + [None])[:2]
+
+    client = DatasetClient(
+        registry_url=registry_url,
+        registry_path=registry_path,
+    )
+
+    path = client.get_dataset_path(name, version)
+    if path is None:
+        console.print(f"[yellow]Dataset '{dataset}' not cached. Run 'datasets pull' first.[/yellow]")
+        raise typer.Exit(1)
+    console.print(str(path.parent))
+
+
+@tasks_app.command("create")
+def tasks_create(
+    name: str = typer.Argument(..., help="Name of the new task"),
+    output_dir: Path = typer.Option(Path("."), "-o", "--output-dir", help="Directory to create task in"),
+):
+    """Scaffold a new task bundle with default structure."""
+    task_dir = output_dir / name
+    if task_dir.exists():
+        console.print(f"[red]Error: Directory '{task_dir}' already exists[/red]")
+        raise typer.Exit(1)
+
+    task_dir.mkdir(parents=True)
+    (task_dir / "environment").mkdir()
+    (task_dir / "tests").mkdir()
+
+    (task_dir / "instruction.md").write_text(
+        f"# {name}\n\nDescribe the task instructions here.\n",
+        encoding="utf-8",
+    )
+
+    (task_dir / "task.toml").write_text(
+        f'[task]\nid = "{name}"\ntimeout = 300\n\n[metadata]\ndifficulty = "medium"\ntags = []\n',
+        encoding="utf-8",
+    )
+
+    (task_dir / "environment" / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n\nWORKDIR /workspace\n\n# Add dependencies here\n",
+        encoding="utf-8",
+    )
+
+    (task_dir / "tests" / "test.sh").write_text(
+        '#!/bin/bash\nset -e\n\n# Add verification logic here\n# Exit 0 for pass, non-zero for fail\n\nexit 0\n',
+        encoding="utf-8",
+    )
+
+    console.print(f"[green]Created task scaffold at: {task_dir}[/green]")
+    console.print("Files created:")
+    console.print(f"  {task_dir}/instruction.md")
+    console.print(f"  {task_dir}/task.toml")
+    console.print(f"  {task_dir}/environment/Dockerfile")
+    console.print(f"  {task_dir}/tests/test.sh")
