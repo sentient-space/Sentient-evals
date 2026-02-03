@@ -58,8 +58,9 @@ def run(
     config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
     graders_file: Optional[Path] = typer.Option(None, "--graders-file", exists=True, readable=True),
     agent_file: Optional[str] = typer.Option(None, "--agent-file"),
-    adapter: Optional[str] = typer.Option(None, "--adapter"),
-    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs"),
+    adapter: Optional[str] = typer.Option(None, "--adapter", "-a", help="Adapter name (gemini-cli, claude-code, etc.) or import path"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model name (e.g., google/gemini-2.0-flash)"),
+    adapter_kwargs: Optional[str] = typer.Option(None, "--adapter-kwargs", help="JSON dict of additional adapter kwargs"),
     jobs_dir: Path = typer.Option(Path("jobs"), "--jobs-dir"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     suite_id: str = typer.Option("default", "--suite-id"),
@@ -68,7 +69,7 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: str = typer.Option("local_python", "--env", case_sensitive=False),
+    env: str = typer.Option(..., "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),
@@ -120,6 +121,8 @@ def run(
             adapter_type = "import"
             import_path = adapter
         kwargs = json.loads(adapter_kwargs) if adapter_kwargs else {}
+        if model is not None:
+            kwargs["model_name"] = model
         adapter_obj = build_adapter(adapter_type=adapter_type, import_path=import_path, kwargs=kwargs)
     elif spec is not None:
         adapter_obj = build_adapter(

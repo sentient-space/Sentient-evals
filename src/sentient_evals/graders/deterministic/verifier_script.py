@@ -11,7 +11,7 @@ from ...models import GraderResult, Severity, Task, TranscriptEvent
 
 @dataclass(frozen=True)
 class VerifierScriptSpec:
-    cmd: str = "sh -lc ./tests/test.sh"
+    cmd: str = "sh -lc /tests/test.sh"
     timeout_s: float | None = None
     reward_paths: Sequence[str] = (
         "/logs/verifier/reward.json",
@@ -49,7 +49,7 @@ class VerifierScriptGrader:
         res = await env.exec(self.spec.cmd, timeout_s=self.spec.timeout_s)
         # If the script exists but is not executable, retry via sh.
         if res.exit_code == 126 and "permission denied" in (res.stderr or "").lower():
-            res = await env.exec("sh -lc 'sh ./tests/test.sh'", timeout_s=self.spec.timeout_s)
+            res = await env.exec("sh -lc 'sh /tests/test.sh'", timeout_s=self.spec.timeout_s)
         artifacts.verifier().write_json(
             "verifier_exec.json",
             {
