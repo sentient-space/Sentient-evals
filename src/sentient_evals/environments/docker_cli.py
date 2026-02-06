@@ -53,6 +53,8 @@ class DockerCLIEnvironment(BaseEnvironment):
         task_digest: str | None,
         image_tag_prefix: str,
         platform: str | None = None,
+        workdir: str | None = None,
+        workspace_mount: str | None = None,
     ):
         super().__init__(trial_id=trial_id, workspace_dir=workspace_dir, logs_dir=logs_dir, config=config)
         self.engine = engine
@@ -64,7 +66,20 @@ class DockerCLIEnvironment(BaseEnvironment):
         self._container_name = f"sentient-evals__{self._sanitize_id(trial_id)}__{unique}"
         self._image = None
         self.tests_dir = workspace_dir.parent / "tests"
-        self._workdir = self._parse_workdir()
+        self._workdir = self._normalize_path(workdir) if workdir else self._parse_workdir()
+        if workspace_mount:
+            self._workspace_mount = self._normalize_path(workspace_mount)
+        elif self._workdir == "/testbed":
+            self._workspace_mount = "/workspace"
+        else:
+            self._workspace_mount = self._workdir
+
+    def _normalize_path(self, path: str | None) -> str:
+        if not path:
+            return ""
+        if not path.startswith("/"):
+            return f"/{path}"
+        return path.rstrip("/") or "/"
 
     def _parse_workdir(self) -> str:
         """Extract WORKDIR from task Dockerfile. Defaults to /app."""
@@ -84,6 +99,10 @@ class DockerCLIEnvironment(BaseEnvironment):
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.tests_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (self.logs_dir / "container_name.txt").write_text(self._container_name + "\n", encoding="utf-8")
+        except Exception:
+            pass
 
         await self._ensure_engine_available()
         image = await self._ensure_image(force_build=force_build)
@@ -92,7 +111,7 @@ class DockerCLIEnvironment(BaseEnvironment):
         await _host_exec(f"{self.engine} rm -f {shlex.quote(self._container_name)} >/dev/null 2>&1 || true")
 
         mounts = [
-            f"-v {shlex.quote(str(self.workspace_dir))}:{self._workdir}",
+            f"-v {shlex.quote(str(self.workspace_dir))}:{self._workspace_mount}",
             f"-v {shlex.quote(str(self.logs_dir))}:/logs",
             f"-v {shlex.quote(str(self.tests_dir))}:/tests",
         ]
@@ -212,9 +231,9 @@ class DockerCLIEnvironment(BaseEnvironment):
             base = self.logs_dir
             rel_path = target_dir[5:].lstrip("/")  # Strip '/logs' prefix
             dst = (base / rel_path).resolve() if rel_path else base
-        elif target_dir.startswith(self._workdir):
-            # Handle dynamic workdir (e.g., /app, /testbed, /workspace)
-            prefix_len = len(self._workdir)
+        elif target_dir.startswith(self._workspace_mount):
+            # Map container workspace mount to host workspace directory.
+            prefix_len = len(self._workspace_mount)
             rel_path = target_dir[prefix_len:].lstrip("/")
             dst = (self.workspace_dir / rel_path).resolve() if rel_path else self.workspace_dir
         else:
@@ -231,12 +250,12 @@ class DockerCLIEnvironment(BaseEnvironment):
                 out.write_bytes(p.read_bytes())
 
     async def download_file(self, source_path: str, target_path: Path) -> None:
-        src = (self.workspace_dir / source_path).resolve()
+        src = self._map_container_path(source_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(src.read_bytes())
 
     async def download_dir(self, source_dir: str, target_dir: Path) -> None:
-        src = (self.workspace_dir / source_dir).resolve()
+        src = self._map_container_path(source_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
         for p in sorted(src.rglob("*")):
             rel = p.relative_to(src)
@@ -246,6 +265,21 @@ class DockerCLIEnvironment(BaseEnvironment):
             elif p.is_file() and not p.is_symlink():
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(p.read_bytes())
+
+    def _map_container_path(self, path: str) -> Path:
+        if path.startswith("/tests"):
+            base = self.tests_dir
+            rel_path = path[6:].lstrip("/")
+            return (base / rel_path).resolve() if rel_path else base
+        if path.startswith("/logs"):
+            base = self.logs_dir
+            rel_path = path[5:].lstrip("/")
+            return (base / rel_path).resolve() if rel_path else base
+        if path.startswith(self._workspace_mount):
+            prefix_len = len(self._workspace_mount)
+            rel_path = path[prefix_len:].lstrip("/")
+            return (self.workspace_dir / rel_path).resolve() if rel_path else self.workspace_dir
+        return (self.workspace_dir / path).resolve()
 
     async def _ensure_image(self, *, force_build: bool) -> str:
         if self.environment_dir is None or not self.environment_dir.exists():
@@ -288,4 +322,3 @@ class DockerCLIEnvironment(BaseEnvironment):
         s = s.strip()
         s = re.sub(r"[^a-zA-Z0-9_.-]+", "_", s)
         return s[:120] if len(s) > 120 else s
-

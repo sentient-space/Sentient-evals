@@ -6,12 +6,16 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 import getpass
+import contextlib
+import subprocess
+import shutil
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.prompt import Confirm
 
 from .environments.base import EnvironmentType
 from .agent_file import load_agent_adapter_from_file, parse_agent_file_ref
@@ -23,6 +27,7 @@ from .runner import RunConfig, run_suite, run_suite_bundles
 from .task_bundles import load_task_bundles
 from .registry import build_adapter, build_grader
 from .datasets import DatasetClient, RegistryClientFactory
+from .datasets.registry.base import BaseRegistryClient
 from .prompts import select_adapter, select_dataset, select_environment, prompt_model_name, prompt_github_token
 from .config import get_github_token, save_github_token, clear_github_token, CONFIG_FILE
 
@@ -54,6 +59,218 @@ _BUILTIN_ADAPTERS = {
     "qwen-coder",
     "swe-agent",
 }
+
+_PROVIDER_ENV_HINTS = {
+    "openai": (["OPENAI_API_KEY"], None),
+    "anthropic": (["ANTHROPIC_API_KEY"], None),
+    "google": (None, ["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    "gemini": (None, ["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    "groq": (["GROQ_API_KEY"], None),
+    "mistral": (["MISTRAL_API_KEY"], None),
+    "together": (["TOGETHER_API_KEY"], None),
+    "deepseek": (["DEEPSEEK_API_KEY"], None),
+    "xai": (["XAI_API_KEY"], None),
+    "azure": (["AZURE_RESOURCE_NAME", "AZURE_API_KEY"], None),
+    "databricks": (["DATABRICKS_HOST", "DATABRICKS_TOKEN"], None),
+    "tetrate": (["TETRATE_API_KEY"], None),
+}
+
+
+def _prompt_secret_env(name: str, *, label: str | None = None) -> bool:
+    if os.environ.get(name):
+        return True
+    if not sys.stdin.isatty():
+        return False
+    prompt = label or name
+    if not Confirm.ask(f"{prompt} not set. Enter now?", default=False):
+        return False
+    value = getpass.getpass(f"Enter {prompt}: ").strip()
+    if not value:
+        return False
+    os.environ[name] = value
+    return True
+
+
+def _prompt_any_of(env_vars: list[str], *, label: str | None = None) -> None:
+    if any(os.environ.get(v) for v in env_vars):
+        return
+    for v in env_vars:
+        if _prompt_secret_env(v, label=label or v):
+            return
+
+
+def _prompt_required(env_vars: list[str]) -> None:
+    for v in env_vars:
+        if not os.environ.get(v):
+            _prompt_secret_env(v, label=v)
+
+
+def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
+    if not sys.stdin.isatty():
+        return
+
+    if adapter == "codex":
+        _prompt_secret_env("OPENAI_API_KEY")
+        return
+    if adapter == "cursor-cli":
+        _prompt_secret_env("CURSOR_API_KEY")
+        return
+    if adapter == "cline-cli":
+        _prompt_secret_env("API_KEY")
+        return
+    if adapter == "claude-code":
+        _prompt_any_of(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"], label="Anthropic/Claude auth")
+        return
+    if adapter == "gemini-cli":
+        _prompt_any_of(["GEMINI_API_KEY", "GOOGLE_API_KEY"], label="Gemini API key")
+        return
+    if adapter == "aider":
+        _prompt_any_of(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"], label="Aider provider API key")
+        return
+    if adapter == "qwen-coder":
+        _prompt_secret_env("OPENAI_API_KEY")
+        return
+    if adapter == "openhands":
+        _prompt_any_of(
+            ["LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            label="OpenHands API key",
+        )
+        return
+    if adapter == "mini-swe-agent":
+        _prompt_any_of(
+            ["MSWEA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            label="Mini SWE Agent API key",
+        )
+        return
+    if adapter == "swe-agent":
+        _prompt_any_of(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "TOGETHER_API_KEY"], label="SWE Agent API key")
+        return
+
+    if adapter in {"goose", "opencode"} and model and "/" in model:
+        provider = model.split("/", 1)[0].lower()
+        required, any_of = _PROVIDER_ENV_HINTS.get(provider, (None, None))
+        if required:
+            _prompt_required(required)
+        elif any_of:
+            _prompt_any_of(any_of, label=f"{provider} API key")
+
+
+def _format_run_event(name: str, payload: dict[str, object]) -> str | None:
+    trial_id = payload.get("trial_id")
+    prefix = f"{trial_id}: " if trial_id else ""
+    if name == "run_start":
+        return f"Starting run {payload.get('run_id')} ({payload.get('trial_count')} trials)"
+    if name == "env_start":
+        return f"{prefix}setting up environment"
+    if name == "env_ready":
+        return f"{prefix}environment ready"
+    if name == "adapter_start":
+        return f"{prefix}running agent"
+    if name == "adapter_done":
+        return f"{prefix}agent completed"
+    if name == "grading_start":
+        return f"{prefix}grading"
+    if name == "grading_done":
+        return f"{prefix}grading completed"
+    if name == "trial_error":
+        return f"{prefix}failed"
+    if name == "trial_done":
+        ok = payload.get("ok")
+        return f"{prefix}done ({'ok' if ok else 'failed'})"
+    if name == "run_done":
+        return "Finalizing results"
+    return None
+
+
+def _make_status_callback(status) -> Callable[[str, dict[str, object]], None]:
+    def _on_event(name: str, payload: dict[str, object]) -> None:
+        msg = _format_run_event(name, payload)
+        if msg:
+            status.update(msg)
+    return _on_event
+
+
+def _dataset_cache_dir(name: str, version: str | None) -> Path:
+    safe_version = version or "head"
+    return Path.home() / ".cache" / "sentient-evals" / "datasets" / f"{name}@{safe_version}"
+
+
+def _count_cached_tasks(tasks_dir: Path) -> int:
+    if not tasks_dir.exists():
+        return 0
+    return sum(1 for p in tasks_dir.iterdir() if p.is_dir() and (p / "task.toml").exists())
+
+
+def _resolve_dataset_tasks_dir(
+    *,
+    name: str,
+    version: str | None,
+    client: BaseRegistryClient,
+) -> Path:
+    spec = client.get_dataset_spec(name, version)
+    if not spec.tasks:
+        raise typer.BadParameter(f"Dataset '{name}@{spec.version}' has no tasks")
+
+    cache_dir = _dataset_cache_dir(spec.name, spec.version)
+    cached_count = _count_cached_tasks(cache_dir)
+
+    if cached_count > 0:
+        use_cache = True
+        if sys.stdin.isatty():
+            use_cache = Confirm.ask(
+                f"Dataset cached ({cached_count} tasks). Use cached copy?",
+                default=True,
+            )
+        if use_cache:
+            console.print(f"[green]Using cached dataset at {cache_dir}[/green]")
+            return cache_dir
+        # Refresh: wipe and re-download
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    console.print(f"[cyan]Downloading dataset: {spec.name}@{spec.version}[/cyan]")
+    downloaded = client.download_dataset(
+        name=spec.name,
+        version=spec.version,
+        output_dir=cache_dir,
+        overwrite=True,
+    )
+    if not downloaded:
+        raise typer.BadParameter(f"Dataset '{spec.name}@{spec.version}' has no tasks")
+    console.print(f"[green]Downloaded {len(downloaded)} task(s) to {cache_dir}[/green]")
+    return cache_dir
+
+
+def _cleanup_run_containers(run_dir: Path, env_type: EnvironmentType) -> None:
+    if env_type not in (EnvironmentType.docker_cli, EnvironmentType.podman_cli, EnvironmentType.docker_sdk):
+        return
+    engine = "docker" if env_type in (EnvironmentType.docker_cli, EnvironmentType.docker_sdk) else "podman"
+    names: set[str] = set()
+    for p in run_dir.glob("trials/*/env_logs/container_name.txt"):
+        try:
+            name = p.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if name:
+            names.add(name)
+    for name in sorted(names):
+        subprocess.run([engine, "rm", "-f", name], check=False, capture_output=True)
+
+def _create_registry_client_for_run(
+    *, registry_url: Optional[str], registry_path: Optional[Path]
+) -> BaseRegistryClient:
+    github_token = None
+    if registry_url is None and registry_path is None:
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token is None and sys.stdin.isatty():
+            github_token = prompt_github_token()
+
+    return RegistryClientFactory.create(
+        registry_url=registry_url,
+        registry_path=registry_path,
+        use_default=True,
+        github_token=github_token,
+    )
 
 
 @app.command()
@@ -93,29 +310,47 @@ def run(
     if model is None and adapter is not None and adapter in _BUILTIN_ADAPTERS:
         model = prompt_model_name(adapter)
 
+    if adapter is not None and adapter in _BUILTIN_ADAPTERS:
+        _maybe_prompt_api_keys(adapter, model)
+
     if env is None:
         env = select_environment()
         if env is None:
             raise typer.Abort()
+
+    registry_client = None
+    if tasks_path is None and tasks_dir is None:
+        if dataset is None:
+            registry_client = _create_registry_client_for_run(
+                registry_url=registry_url, registry_path=registry_path
+            )
+            datasets = registry_client.get_datasets()
+            selected = select_dataset(datasets)
+            if selected is None:
+                raise typer.Abort()
+            dataset = selected.get_qualified_name()
+        else:
+            registry_client = _create_registry_client_for_run(
+                registry_url=registry_url, registry_path=registry_path
+            )
 
     source_count = sum([tasks_path is not None, tasks_dir is not None, dataset is not None])
     if source_count != 1:
         raise typer.BadParameter("Provide exactly one of --tasks, --tasks-dir, or --dataset")
     if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
         raise typer.BadParameter("--env only supports local_python when using --tasks")
-    if dataset is not None and registry_url is None and registry_path is None:
-        raise typer.BadParameter("--dataset requires --registry-url or --registry-path")
 
     dataset_tasks_dir: Optional[Path] = None
     if dataset is not None:
         name, version = (dataset.split("@", 1) + [None])[:2]
-        client = RegistryClientFactory.create(registry_url=registry_url, registry_path=registry_path)
-        console.print(f"[cyan]Downloading dataset: {name}@{version or 'latest'}[/cyan]")
-        downloaded = client.download_dataset(name, version)
-        if not downloaded:
-            raise typer.BadParameter(f"Dataset '{dataset}' has no tasks")
-        dataset_tasks_dir = downloaded[0].local_path.parent
-        console.print(f"[green]Downloaded {len(downloaded)} task(s) to {dataset_tasks_dir}[/green]")
+        client = registry_client or _create_registry_client_for_run(
+            registry_url=registry_url, registry_path=registry_path
+        )
+        dataset_tasks_dir = _resolve_dataset_tasks_dir(
+            name=name,
+            version=version,
+            client=client,
+        )
 
     spec = load_run_spec(config) if config is not None else None
     suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
@@ -153,6 +388,7 @@ def run(
         raise typer.BadParameter("Provide --agent-file, --config, or --adapter to select an adapter")
 
     grader_specs: list[dict] = []
+    bundles = None
     if graders_file is not None:
         parsed = json.loads(graders_file.read_text(encoding="utf-8"))
         if not isinstance(parsed, list):
@@ -163,11 +399,19 @@ def run(
     elif tasks_dir is not None or dataset_tasks_dir is not None:
         effective_dir = tasks_dir or dataset_tasks_dir
         assert effective_dir is not None
-        has_test_sh = any(effective_dir.rglob("tests/test.sh"))
-        if not has_test_sh:
+        bundles = load_task_bundles(effective_dir)
+        if not bundles:
+            raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
+        missing_tests = [
+            b.task.id
+            for b in bundles
+            if b.tests_dir is None or not (b.tests_dir / "test.sh").exists()
+        ]
+        if missing_tests:
+            missing_list = ", ".join(missing_tests)
             raise typer.BadParameter(
-                "No graders specified and no tests/test.sh found. "
-                "Provide --config/--graders-file or add tests/test.sh verifiers."
+                "No graders specified and some tasks are missing tests/test.sh. "
+                f"Add verifiers or provide --config/--graders-file. Missing: {missing_list}"
             )
         grader_specs = [{"type": "verifier_script", "config": {}}]
     else:
@@ -192,18 +436,39 @@ def run(
         daytona_network_block_all=daytona_network_block_all,
     )
 
-    if tasks_dir is not None or dataset_tasks_dir is not None:
-        effective_dir = tasks_dir or dataset_tasks_dir
-        assert effective_dir is not None
-        bundles = load_task_bundles(effective_dir)
-        results, summary = asyncio.run(
-            run_suite_bundles(bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg)
-        )
-    else:
-        assert tasks_path is not None
-        tasks_raw = json.loads(tasks_path.read_text())
-        tasks = [Task(**t) for t in tasks_raw]
-        results, summary = asyncio.run(run_suite(tasks=tasks, adapter=adapter_obj, graders=graders, cfg=cfg))
+    status_ctx = (
+        console.status("Starting evals...", spinner="dots") if console.is_terminal else contextlib.nullcontext()
+    )
+    run_dir = jobs_dir / run_id
+    try:
+        with status_ctx as status:
+            on_event = _make_status_callback(status) if status is not None else None
+            if tasks_dir is not None or dataset_tasks_dir is not None:
+                effective_dir = tasks_dir or dataset_tasks_dir
+                assert effective_dir is not None
+                if bundles is None:
+                    bundles = load_task_bundles(effective_dir)
+                results, summary = asyncio.run(
+                    run_suite_bundles(
+                        bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg, on_event=on_event
+                    )
+                )
+            else:
+                assert tasks_path is not None
+                tasks_raw = json.loads(tasks_path.read_text())
+                tasks = [Task(**t) for t in tasks_raw]
+                results, summary = asyncio.run(
+                    run_suite(tasks=tasks, adapter=adapter_obj, graders=graders, cfg=cfg, on_event=on_event)
+                )
+    except KeyboardInterrupt:
+        cancel_path = run_dir / "cancel.json"
+        if not cancel_path.exists():
+            cancel_path.write_text(
+                json.dumps({"requested_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8"
+            )
+        _cleanup_run_containers(run_dir, env_type)
+        console.print("\n[yellow]Run cancelled. Cleaned up containers (best effort).[/yellow]")
+        raise typer.Exit(130)
 
     table = Table(title=f"sentient-evals: {summary.run_id}")
     table.add_column("trial")
@@ -447,7 +712,15 @@ def tasks_create(
     )
 
     (task_dir / "task.toml").write_text(
-        f'[task]\nid = "{name}"\ntimeout = 300\n\n[metadata]\ndifficulty = "medium"\ntags = []\n',
+        f'id = "{name}"\n'
+        f'timeout_seconds = 300\n\n'
+        f'[input]\n\n'
+        f'[metadata]\n'
+        f'difficulty = "medium"\n'
+        f'tags = []\n\n'
+        f'[environment]\n'
+        f'type = "container"\n'
+        f'allow_internet = true\n',
         encoding="utf-8",
     )
 
@@ -532,4 +805,3 @@ def auth_status():
         console.print("[yellow]✗ Not authenticated[/yellow]")
         console.print("  Run 'sentient-evals auth login' to authenticate")
         console.print("  Or set GITHUB_TOKEN environment variable")
-

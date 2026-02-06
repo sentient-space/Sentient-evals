@@ -31,6 +31,8 @@ class ContainerEnvironmentSpec(BaseEnvironmentSpec):
     type: Literal["container"] = "container"
     image: str | None = None
     platform: str | None = None
+    workdir: str | None = None
+    workspace_mount: str | None = None
 
 
 EnvironmentSpec = LocalPythonEnvironmentSpec | ContainerEnvironmentSpec
@@ -47,4 +49,3 @@ class TaskBundle(BaseModel):
     env: EnvironmentSpec = Field(default_factory=LocalPythonEnvironmentSpec)
     digest: str
     extra: dict[str, Any] = Field(default_factory=dict)
-

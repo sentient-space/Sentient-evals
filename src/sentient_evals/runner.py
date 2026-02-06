@@ -6,9 +6,10 @@ import traceback
 import inspect
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from math import sqrt
-from typing import Callable, Literal, Sequence, TypeVar
+from typing import Any, Callable, Literal, Sequence, TypeVar
 
 from .adapters import AgentAdapter
 from .atif.converters import transcript_to_trajectory
@@ -103,20 +104,24 @@ async def _call_adapter(
 
 def _ensure_run_config(
     writer: ArtifactWriter, cfg: RunConfig, extra_provenance: dict[str, object] | None
-) -> None:
-    if cfg.mode == "fresh" or not (writer.run_dir / "run_config.json").exists():
-        provenance = runtime_provenance()
-        if extra_provenance:
-            provenance = provenance | extra_provenance
-        run_cfg = RunConfigFile(
-            run_id=cfg.run_id,
-            suite=cfg.suite,
-            adapter=cfg.adapter_name,
-            started_at=utcnow(),
-            harness_version=__version__,
-            provenance=provenance,
-        )
-        writer.write_json("run_config.json", run_cfg.model_dump())
+) -> RunConfigFile:
+    path = writer.run_dir / "run_config.json"
+    if cfg.mode != "fresh" and path.exists():
+        return RunConfigFile.model_validate_json(path.read_text(encoding="utf-8"))
+
+    provenance = runtime_provenance()
+    if extra_provenance:
+        provenance = provenance | extra_provenance
+    run_cfg = RunConfigFile(
+        run_id=cfg.run_id,
+        suite=cfg.suite,
+        adapter=cfg.adapter_name,
+        started_at=utcnow(),
+        harness_version=__version__,
+        provenance=provenance,
+    )
+    writer.write_json("run_config.json", run_cfg.model_dump())
+    return run_cfg
 
 
 T = TypeVar("T")
@@ -129,6 +134,15 @@ def _seed_trials(items: Sequence[T], trials_per_task: int, seeds: list[int]) -> 
             seed = seeds[attempt % len(seeds)]
             trials.append((item, attempt, seed))
     return trials
+
+
+def _emit_event(on_event: Callable[[str, dict[str, Any]], None] | None, name: str, **payload: Any) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(name, payload)
+    except Exception:
+        pass
 
 
 def _resume_trials(
@@ -202,11 +216,13 @@ def _finalize_run(
     tasks: Sequence[Task],
     results: Sequence[TrialResult],
     cancel_path: Path,
+    run_started_at: datetime,
 ) -> RunSummary:
     passed, failed, avg_score, pass_at_k, pass_pow_k, per_task = _compute_stats(results, tasks)
     summary = RunSummary(
         run_id=cfg.run_id,
         suite_id=cfg.suite.id,
+        started_at=run_started_at,
         task_count=len(tasks),
         trial_count=len(results),
         passed_trials=passed,
@@ -265,14 +281,27 @@ async def run_suite(
     adapter: AgentAdapter,
     graders: Sequence[Grader],
     cfg: RunConfig,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[TrialResult], RunSummary]:
     # Ensure jobs_dir is absolute so container backends can mount workspace/logs reliably.
     writer = ArtifactWriter(cfg.jobs_dir.expanduser().resolve(), cfg.run_id)
     writer.ensure_run_dirs()
     cancel_path = writer.run_dir / "cancel.json"
-    _ensure_run_config(writer, cfg, None)
-    seeds = cfg.suite.seeds or [random.randint(1, 2**31 - 1)]
+
+    run_cfg = _ensure_run_config(writer, cfg, {"env_type": cfg.env_type.value})
+    seeds = run_cfg.suite.seeds or [random.randint(1, 2**31 - 1)]
+    if run_cfg.suite.seeds is None:
+        run_cfg = run_cfg.model_copy(update={"suite": run_cfg.suite.model_copy(update={"seeds": seeds})})
+        writer.write_json("run_config.json", run_cfg.model_dump())
     trials = _seed_trials(tasks, cfg.suite.trials_per_task, seeds)
+    _emit_event(
+        on_event,
+        "run_start",
+        run_id=cfg.run_id,
+        task_count=len(tasks),
+        trial_count=len(trials),
+        env_type=cfg.env_type.value,
+    )
 
     sem = asyncio.Semaphore(cfg.suite.concurrency)
     results: list[TrialResult] = []
@@ -285,6 +314,7 @@ async def run_suite(
     async def _run_one(task: Task, attempt: int, seed: int) -> TrialResult:
         async with sem:
             if cancel_path.exists():
+                _emit_event(on_event, "trial_cancelled", trial_id=_trial_id(task.id, attempt), task_id=task.id)
                 return TrialResult(
                     ok=False,
                     task_id=task.id,
@@ -297,6 +327,7 @@ async def run_suite(
                 )
 
             trial_id = _trial_id(task.id, attempt)
+            _emit_event(on_event, "trial_start", trial_id=trial_id, task_id=task.id)
             writer.ensure_trial_dirs(trial_id)
             trial_cfg = TrialConfig(
                 run_id=cfg.run_id,
@@ -332,19 +363,41 @@ async def run_suite(
 
             artifacts = TrialArtifacts(writer.trial_dir(trial_id))
             try:
-                transcript, outcome = await _call_adapter(
-                    adapter=adapter,
-                    task=task,
-                    instruction=_best_effort_instruction(task),
-                    seed=seed,
-                    env=env,
-                    artifacts=artifacts,
-                )
+                _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=task.id)
+                timeout_s = task.timeout_seconds
+                if timeout_s is not None and timeout_s > 0:
+                    transcript, outcome = await asyncio.wait_for(
+                        _call_adapter(
+                            adapter=adapter,
+                            task=task,
+                            instruction=_best_effort_instruction(task),
+                            seed=seed,
+                            env=env,
+                            artifacts=artifacts,
+                        ),
+                        timeout=timeout_s,
+                    )
+                else:
+                    transcript, outcome = await _call_adapter(
+                        adapter=adapter,
+                        task=task,
+                        instruction=_best_effort_instruction(task),
+                        seed=seed,
+                        env=env,
+                        artifacts=artifacts,
+                    )
                 ok = True
+                _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=task.id)
+            except asyncio.TimeoutError:
+                err = f"timeout after {task.timeout_seconds}s"
+                ok = False
+                error_path.write_text(err, encoding="utf-8")
+                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=task.id, error=err)
             except Exception as e:  # pragma: no cover
                 err = str(e)
                 ok = False
                 error_path.write_text(traceback.format_exc(), encoding="utf-8")
+                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=task.id, error=err)
             finally:
                 if recorder is not None:
                     recorder.close()
@@ -362,6 +415,7 @@ async def run_suite(
 
             grader_results = []
             if ok:
+                _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=task.id)
                 for g in graders:
                     try:
                         if supports_env_grading(g):
@@ -389,6 +443,7 @@ async def run_suite(
                             details={"error": str(exc)},
                         )
                     grader_results.append(result)
+                _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=task.id)
 
             trial_result = TrialResult(
                 ok=ok,
@@ -404,6 +459,14 @@ async def run_suite(
                 error=err,
             )
             writer.write_result(trial_id, trial_result)
+            _emit_event(
+                on_event,
+                "trial_done",
+                trial_id=trial_id,
+                task_id=task.id,
+                ok=ok,
+                error=err,
+            )
             return trial_result
 
     if cancel_path.exists():
@@ -418,7 +481,9 @@ async def run_suite(
         tasks=tasks,
         results=results,
         cancel_path=cancel_path,
+        run_started_at=run_cfg.started_at,
     )
+    _emit_event(on_event, "run_done", run_id=cfg.run_id)
     return results, summary
 
 
@@ -428,13 +493,25 @@ async def run_suite_bundles(
     adapter: AgentAdapter,
     graders: Sequence[Grader],
     cfg: RunConfig,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[TrialResult], RunSummary]:
     writer = ArtifactWriter(cfg.jobs_dir.expanduser().resolve(), cfg.run_id)
     writer.ensure_run_dirs()
     cancel_path = writer.run_dir / "cancel.json"
-    _ensure_run_config(writer, cfg, {"env_type": cfg.env_type.value})
-    seeds = cfg.suite.seeds or [random.randint(1, 2**31 - 1)]
+    run_cfg = _ensure_run_config(writer, cfg, {"env_type": cfg.env_type.value})
+    seeds = run_cfg.suite.seeds or [random.randint(1, 2**31 - 1)]
+    if run_cfg.suite.seeds is None:
+        run_cfg = run_cfg.model_copy(update={"suite": run_cfg.suite.model_copy(update={"seeds": seeds})})
+        writer.write_json("run_config.json", run_cfg.model_dump())
     trials = _seed_trials(bundles, cfg.suite.trials_per_task, seeds)
+    _emit_event(
+        on_event,
+        "run_start",
+        run_id=cfg.run_id,
+        task_count=len(bundles),
+        trial_count=len(trials),
+        env_type=cfg.env_type.value,
+    )
 
     sem = asyncio.Semaphore(cfg.suite.concurrency)
     results: list[TrialResult] = []
@@ -447,6 +524,9 @@ async def run_suite_bundles(
     async def _run_one(bundle: TaskBundle, attempt: int, seed: int) -> TrialResult:
         async with sem:
             if cancel_path.exists():
+                _emit_event(
+                    on_event, "trial_cancelled", trial_id=_trial_id(bundle.task.id, attempt), task_id=bundle.task.id
+                )
                 return TrialResult(
                     ok=False,
                     task_id=bundle.task.id,
@@ -459,6 +539,7 @@ async def run_suite_bundles(
                 )
 
             trial_id = _trial_id(bundle.task.id, attempt)
+            _emit_event(on_event, "trial_start", trial_id=trial_id, task_id=bundle.task.id)
             writer.ensure_trial_dirs(trial_id)
             transcript = []
             outcome: Outcome = Outcome(summary=None, data={})
@@ -489,6 +570,11 @@ async def run_suite_bundles(
             container_platform = None
             if getattr(bundle.env, "type", None) == "container":
                 container_platform = getattr(bundle.env, "platform", None)
+            container_workdir = None
+            container_workspace_mount = None
+            if getattr(bundle.env, "type", None) == "container":
+                container_workdir = getattr(bundle.env, "workdir", None)
+                container_workspace_mount = getattr(bundle.env, "workspace_mount", None)
 
             trial_cfg = TrialConfig(
                 run_id=cfg.run_id,
@@ -520,6 +606,8 @@ async def run_suite_bundles(
                 task_digest=bundle.digest,
                 container_image=container_image,
                 container_platform=container_platform,
+                container_workdir=container_workdir,
+                container_workspace_mount=container_workspace_mount,
                 docker_image_tag_prefix=cfg.docker_image_tag_prefix,
                 daytona_snapshot_template=cfg.daytona_snapshot_template,
                 daytona_network_block_all=cfg.daytona_network_block_all,
@@ -536,7 +624,9 @@ async def run_suite_bundles(
 
             grader_results = []
             try:
+                _emit_event(on_event, "env_start", trial_id=trial_id, task_id=bundle.task.id)
                 await environment.start(force_build=False)
+                _emit_event(on_event, "env_ready", trial_id=trial_id, task_id=bundle.task.id)
                
                 if bundle.files_dir is not None and bundle.files_dir.exists():
                     await environment.upload_dir(bundle.files_dir, ".")
@@ -546,16 +636,33 @@ async def run_suite_bundles(
                     await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
 
                 artifacts = TrialArtifacts(writer.trial_dir(trial_id))
-                transcript, outcome = await _call_adapter(
-                    adapter=adapter,
-                    task=bundle.task,
-                    instruction=bundle.instruction or _best_effort_instruction(bundle.task),
-                    seed=seed,
-                    env=tool_executor,
-                    artifacts=artifacts,
-                )
+                _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
+                timeout_s = bundle.task.timeout_seconds
+                if timeout_s is not None and timeout_s > 0:
+                    transcript, outcome = await asyncio.wait_for(
+                        _call_adapter(
+                            adapter=adapter,
+                            task=bundle.task,
+                            instruction=bundle.instruction or _best_effort_instruction(bundle.task),
+                            seed=seed,
+                            env=tool_executor,
+                            artifacts=artifacts,
+                        ),
+                        timeout=timeout_s,
+                    )
+                else:
+                    transcript, outcome = await _call_adapter(
+                        adapter=adapter,
+                        task=bundle.task,
+                        instruction=bundle.instruction or _best_effort_instruction(bundle.task),
+                        seed=seed,
+                        env=tool_executor,
+                        artifacts=artifacts,
+                    )
                 ok = True
+                _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=bundle.task.id)
                 if ok:
+                    _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=bundle.task.id)
                     for g in graders:
                         try:
                             if supports_env_grading(g):
@@ -583,13 +690,20 @@ async def run_suite_bundles(
                                 score=0.0,
                                 passed=False,
                                 severity=Severity.error,
-                                details={"error": str(exc)},
-                            )
+                            details={"error": str(exc)},
+                        )
                         grader_results.append(result)
+                    _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)
+            except asyncio.TimeoutError:
+                err = f"timeout after {bundle.task.timeout_seconds}s"
+                ok = False
+                error_path.write_text(err, encoding="utf-8")
+                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
             except Exception as e:  # pragma: no cover
                 err = str(e)
                 ok = False
                 error_path.write_text(traceback.format_exc(), encoding="utf-8")
+                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
             finally:
                 try:
                     await environment.stop(delete=True)
@@ -624,6 +738,14 @@ async def run_suite_bundles(
                 error=err,
             )
             writer.write_result(trial_id, trial_result)
+            _emit_event(
+                on_event,
+                "trial_done",
+                trial_id=trial_id,
+                task_id=bundle.task.id,
+                ok=ok,
+                error=err,
+            )
             return trial_result
 
     if cancel_path.exists():
@@ -639,6 +761,7 @@ async def run_suite_bundles(
         tasks=tasks,
         results=results,
         cancel_path=cancel_path,
+        run_started_at=run_cfg.started_at,
     )
+    _emit_event(on_event, "run_done", run_id=cfg.run_id)
     return results, summary
-

@@ -33,9 +33,9 @@ Two modes, one shared harness:
 ## Data + artifacts model (Harbor-inspired)
 
 - **Local runs**: write to a `jobs/` folder by default:
-  - `jobs/<run_id>/config.json`
-  - `jobs/<run_id>/result.json`
-  - `jobs/<run_id>/<trial_id>/...` (transcript, verifier outputs, etc.)
+  - `jobs/<run_id>/run_config.json`
+  - `jobs/<run_id>/run_result.json`
+  - `jobs/<run_id>/trials/<trial_id>/...` (transcript, verifier outputs, etc.)
 - **Hosted runs**:
   - Datasets + large artifacts in object storage (S3/GCS).
   - Structured results in DB (run/task/trial/grader rows).
@@ -93,13 +93,13 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
     - JUnit XML export for CI is available via `sentient-evals junit <run_dir> --out junit.xml`
 
 - [x] 2. Job/trial filesystem format + result writer (Harbor-style)
-  - Implemented canonical run-level `config.json` + `result.json` (replaces run/summary).
-  - Trials now guarantee `config.json`, `result.json`, `trajectory.json`, `outcome.json` plus `judge/` and `verifier/` dirs; graders receive an artifact sink to write judge/verifier outputs.
+  - Implemented canonical run-level `run_config.json` + `run_result.json` (replaces run/summary).
+  - Trials now guarantee `trial_config.json`, `trial_result.json`, `trajectory.json`, `outcome.json` plus `judge/` and `verifier/` dirs; graders receive an artifact sink to write judge/verifier outputs.
   - Artifact writer uses atomic writes; schemas exported include `RunConfigFile`.
   - Standard on-disk layout (`jobs/<run_id>/...`) for local runs
   - Trial subfolders include:
-    - `config.json` (trial config)
-    - `result.json` (grader outputs + metrics)
+    - `trial_config.json` (trial config)
+    - `trial_result.json` (grader outputs + metrics)
     - `trajectory.json` (ATIF trajectory)
     - `outcome.json` (final state snapshot pointer + summaries)
   - Optional: `verifier/` folder outputs for deterministic graders (tests, stdout/stderr, rewards)
@@ -265,4 +265,3 @@ Two modes (recommended):
 - **Hosted mode**: `sen evals trigger` calls Sentient backend endpoints to run eval pipelines against a deployment and store results for the dashboard.
 
 The private CLI should not re-implement harness logic; it should depend on `sentient-evals` for local mode and use Sentient API for hosted mode.
-

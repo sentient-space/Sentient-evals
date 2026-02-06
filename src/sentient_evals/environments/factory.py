@@ -30,6 +30,8 @@ class EnvironmentFactory:
         task_digest: str | None = None,
         container_image: str | None = None,
         container_platform: str | None = None,
+        container_workdir: str | None = None,
+        container_workspace_mount: str | None = None,
         docker_image_tag_prefix: str = "sentient-evals",
         daytona_snapshot_template: str | None = None,
         daytona_network_block_all: bool | None = None,
@@ -58,6 +60,8 @@ class EnvironmentFactory:
                 task_digest=task_digest,
                 image_tag_prefix=docker_image_tag_prefix,
                 platform=container_platform,
+                workdir=container_workdir,
+                workspace_mount=container_workspace_mount,
             )
 
         if env_type == EnvironmentType.docker_sdk:
@@ -72,6 +76,8 @@ class EnvironmentFactory:
                 task_digest=task_digest,
                 image_tag_prefix=docker_image_tag_prefix,
                 platform=container_platform,
+                workdir=container_workdir,
+                workspace_mount=container_workspace_mount,
             )
 
         if env_type == EnvironmentType.daytona:
@@ -90,4 +96,3 @@ class EnvironmentFactory:
             )
 
         raise ValueError(f"Unsupported environment type: {env_type}")
-
