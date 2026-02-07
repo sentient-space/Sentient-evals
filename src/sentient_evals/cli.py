@@ -21,7 +21,7 @@ from rich.prompt import Confirm
 from .environments.base import EnvironmentType
 from .agent_file import load_agent_adapter_from_file, parse_agent_file_ref
 from .config_files import load_run_spec
-from .models import SuiteConfig, Task
+from .models import SuiteConfig, Task, TrialResult
 from .junit import JUnitExportConfig, trials_to_junit_xml
 from .schema_export import export_json_schemas
 from .runner import RunConfig, run_suite, run_suite_bundles
@@ -195,6 +195,122 @@ def _make_status_callback(status) -> Callable[[str, dict[str, object]], None]:
         if msg:
             status.update(msg)
     return _on_event
+
+
+def _trial_passed(result: TrialResult) -> bool:
+    return bool(result.ok and result.graders and all(g.passed for g in result.graders))
+
+
+def _format_number(value: object, *, digits: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def _load_trial_results(trials_dir: Path) -> list[TrialResult]:
+    if not trials_dir.exists():
+        return []
+    result_paths = sorted(trials_dir.glob("*/trial_result.json"))
+    out: list[TrialResult] = []
+    for result_path in result_paths:
+        out.append(TrialResult.model_validate_json(result_path.read_text()))
+    return out
+
+
+def _render_run_dashboard(
+    *,
+    run_result: dict,
+    trial_results: list[TrialResult],
+    max_failures: int = 10,
+) -> None:
+    metrics = run_result.get("metrics") or {}
+
+    summary = Table(title=f"sentient-evals summary: {run_result.get('run_id', '')}")
+    summary.add_column("metric")
+    summary.add_column("value")
+    summary.add_row("status", str(run_result.get("status", "n/a")))
+    summary.add_row("tasks", _format_number(run_result.get("task_count")))
+    summary.add_row("trials", _format_number(run_result.get("trial_count")))
+    summary.add_row("passed", _format_number(run_result.get("passed_trials")))
+    summary.add_row("failed", _format_number(run_result.get("failed_trials")))
+    summary.add_row("avg_score", _format_number(run_result.get("avg_score")))
+    summary.add_row("score_stddev", _format_number(metrics.get("score_stddev")))
+    summary.add_row("pass_at_k", _format_number(metrics.get("pass_at_k")))
+    summary.add_row("pass_pow_k", _format_number(metrics.get("pass_pow_k")))
+    summary.add_row("trial_pass_rate", _format_number(metrics.get("trial_pass_rate")))
+    ci = metrics.get("trial_pass_rate_ci95") or []
+    if isinstance(ci, list) and len(ci) == 2:
+        summary.add_row("trial_pass_rate_ci95", f"{_format_number(ci[0])}–{_format_number(ci[1])}")
+    console.print(summary)
+
+    judge_stats = metrics.get("judge") or {}
+    if judge_stats:
+        jtable = Table(title="judge reliability")
+        jtable.add_column("grader")
+        jtable.add_column("metrics")
+        llm = judge_stats.get("llm_judge")
+        if isinstance(llm, dict):
+            jtable.add_row(
+                "llm_judge",
+                f"count={llm.get('count')} pass_rate={_format_number(llm.get('pass_rate'))} "
+                f"unknown_rate={_format_number(llm.get('unknown_rate'))}",
+            )
+        multi = judge_stats.get("multi_llm_judge")
+        if isinstance(multi, dict):
+            extra = ""
+            examples = multi.get("disagreement_examples") or []
+            if examples:
+                extra = f" examples={', '.join(examples)}"
+            jtable.add_row(
+                "multi_llm_judge",
+                f"count={multi.get('count')} agreement_mean={_format_number(multi.get('agreement_rate_mean'))} "
+                f"disagreement_rate={_format_number(multi.get('disagreement_rate'))}{extra}",
+            )
+        pairwise = judge_stats.get("pairwise_judge")
+        if isinstance(pairwise, dict):
+            extra = ""
+            examples = pairwise.get("tie_examples") or []
+            if examples:
+                extra = f" tie_examples={', '.join(examples)}"
+            jtable.add_row(
+                "pairwise_judge",
+                f"count={pairwise.get('count')} tie_rate={_format_number(pairwise.get('tie_rate'))} "
+                f"candidate_rate={_format_number(pairwise.get('candidate_rate'))} "
+                f"baseline_rate={_format_number(pairwise.get('baseline_rate'))}{extra}",
+            )
+        console.print(jtable)
+
+    failures = [r for r in trial_results if not _trial_passed(r)]
+    if failures:
+        ftable = Table(title="failures (sample)")
+        ftable.add_column("trial")
+        ftable.add_column("reason")
+        for r in failures[:max_failures]:
+            reason = r.error or ""
+            if not reason:
+                failing = next((g for g in r.graders if not g.passed), None)
+                if failing:
+                    details = failing.details or {}
+                    if "error" in details:
+                        reason = f"{failing.name}: {details.get('error')}"
+                    elif "verdict" in details:
+                        reason = f"{failing.name}: verdict={details.get('verdict')}"
+                    elif "reason" in details:
+                        reason = f"{failing.name}: {details.get('reason')}"
+                    else:
+                        reason = f"{failing.name}: failed"
+                else:
+                    reason = "failed"
+            ftable.add_row(r.trial_id, reason)
+        console.print(ftable)
+        if len(failures) > max_failures:
+            console.print(f"[dim]... and {len(failures) - max_failures} more failures[/dim]")
 
 
 def _dataset_cache_dir(name: str, version: str | None) -> Path:
@@ -553,6 +669,10 @@ def run(
         table.add_row(r.trial_id, str(r.ok), passed, score)
 
     console.print(table)
+    run_result_path = run_dir / "run_result.json"
+    if run_result_path.exists():
+        run_result = json.loads(run_result_path.read_text())
+        _render_run_dashboard(run_result=run_result, trial_results=results)
     console.print(f"Wrote artifacts to: {jobs_dir / run_id}")
 
 
@@ -571,7 +691,9 @@ def report(run_dir: Path = typer.Argument(..., exists=True, readable=True)):
     result_path = run_dir / "run_result.json"
     if not result_path.exists():
         raise typer.BadParameter("run_result.json not found")
-    console.print_json(result_path.read_text())
+    run_result = json.loads(result_path.read_text())
+    trial_results = _load_trial_results(run_dir / "trials")
+    _render_run_dashboard(run_result=run_result, trial_results=trial_results)
 
 
 @app.command()
@@ -621,9 +743,46 @@ def diff(
     table.add_column("metric")
     table.add_column("baseline")
     table.add_column("candidate")
+    table.add_column("delta")
     for k in ["passed_trials", "failed_trials", "avg_score", "trial_count", "task_count"]:
-        table.add_row(k, str(b.get(k)), str(c.get(k)))
+        b_val = b.get(k)
+        c_val = c.get(k)
+        delta = "n/a"
+        if isinstance(b_val, (int, float)) and isinstance(c_val, (int, float)):
+            delta = _format_number(c_val - b_val)
+        table.add_row(k, str(b_val), str(c_val), delta)
     console.print(table)
+
+    b_tasks = b.get("per_task") or {}
+    c_tasks = c.get("per_task") or {}
+    regressions = []
+    all_task_ids = sorted(set(b_tasks.keys()) | set(c_tasks.keys()))
+    for tid in all_task_ids:
+        b_rate = (b_tasks.get(tid, {}) or {}).get("pass_rate", 0.0)
+        c_rate = (c_tasks.get(tid, {}) or {}).get("pass_rate", 0.0)
+        try:
+            delta = float(c_rate) - float(b_rate)
+        except Exception:
+            continue
+        if delta < 0:
+            regressions.append((tid, b_rate, c_rate, delta))
+
+    if regressions:
+        reg_table = Table(title="regressions (pass_rate)")
+        reg_table.add_column("task")
+        reg_table.add_column("baseline")
+        reg_table.add_column("candidate")
+        reg_table.add_column("delta")
+        for tid, b_rate, c_rate, delta in sorted(regressions, key=lambda x: x[3]):
+            reg_table.add_row(
+                tid,
+                _format_number(b_rate),
+                _format_number(c_rate),
+                _format_number(delta),
+            )
+        console.print(reg_table)
+    else:
+        console.print("[green]No regressions detected (per-task pass_rate).[/green]")
 
 
 schema_app = typer.Typer(no_args_is_help=True)

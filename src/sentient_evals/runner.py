@@ -201,6 +201,105 @@ def _compute_stats(
     return passed, failed, avg_score, pass_at_k, pass_pow_k, per_task
 
 
+def _score_variance(scores: Sequence[float]) -> tuple[float | None, float | None]:
+    if not scores:
+        return None, None
+    mean = sum(scores) / float(len(scores))
+    var = sum((s - mean) ** 2 for s in scores) / float(len(scores))
+    return var, sqrt(var)
+
+
+def _collect_trial_scores(results: Sequence[TrialResult]) -> list[float]:
+    scores: list[float] = []
+    for r in results:
+        if not r.ok or not r.graders:
+            continue
+        scores.append(sum(g.score for g in r.graders) / len(r.graders))
+    return scores
+
+
+def _compute_judge_stats(results: Sequence[TrialResult], *, max_examples: int = 5) -> dict[str, Any]:
+    llm = {"count": 0, "pass": 0, "fail": 0, "unknown": 0}
+    pairwise = {"count": 0, "candidate": 0, "baseline": 0, "tie": 0, "unknown": 0, "tie_examples": []}
+    multi = {
+        "count": 0,
+        "agreement_rate_sum": 0.0,
+        "agreement_rate_count": 0,
+        "disagreements": 0,
+        "disagreement_examples": [],
+    }
+
+    for r in results:
+        for g in r.graders:
+            name = getattr(g, "name", "")
+            details = g.details or {}
+            if name == "llm_judge":
+                llm["count"] += 1
+                verdict = str(details.get("verdict", "")).lower()
+                if verdict == "pass":
+                    llm["pass"] += 1
+                elif verdict == "fail":
+                    llm["fail"] += 1
+                else:
+                    llm["unknown"] += 1
+            elif name == "pairwise_judge":
+                pairwise["count"] += 1
+                verdict = str(details.get("verdict", "")).lower()
+                if verdict == "candidate":
+                    pairwise["candidate"] += 1
+                elif verdict == "baseline":
+                    pairwise["baseline"] += 1
+                elif verdict == "tie":
+                    pairwise["tie"] += 1
+                    if len(pairwise["tie_examples"]) < max_examples:
+                        pairwise["tie_examples"].append(r.trial_id)
+                else:
+                    pairwise["unknown"] += 1
+            elif name == "multi_llm_judge":
+                multi["count"] += 1
+                agreement_rate = details.get("agreement_rate")
+                if isinstance(agreement_rate, (int, float)):
+                    multi["agreement_rate_sum"] += float(agreement_rate)
+                    multi["agreement_rate_count"] += 1
+                judges = details.get("judges")
+                if isinstance(judges, list) and judges:
+                    passes = [bool(j.get("passed")) for j in judges if isinstance(j, dict)]
+                    if passes:
+                        agreed = all(passes) or all(not p for p in passes)
+                        if not agreed:
+                            multi["disagreements"] += 1
+                            if len(multi["disagreement_examples"]) < max_examples:
+                                multi["disagreement_examples"].append(r.trial_id)
+
+    out: dict[str, Any] = {}
+    if llm["count"] > 0:
+        out["llm_judge"] = {
+            "count": llm["count"],
+            "pass_rate": llm["pass"] / llm["count"],
+            "unknown_rate": llm["unknown"] / llm["count"],
+        }
+    if pairwise["count"] > 0:
+        out["pairwise_judge"] = {
+            "count": pairwise["count"],
+            "candidate_rate": pairwise["candidate"] / pairwise["count"],
+            "baseline_rate": pairwise["baseline"] / pairwise["count"],
+            "tie_rate": pairwise["tie"] / pairwise["count"],
+            "unknown_rate": pairwise["unknown"] / pairwise["count"],
+            "tie_examples": pairwise["tie_examples"],
+        }
+    if multi["count"] > 0:
+        agreement_rate = None
+        if multi["agreement_rate_count"] > 0:
+            agreement_rate = multi["agreement_rate_sum"] / float(multi["agreement_rate_count"])
+        out["multi_llm_judge"] = {
+            "count": multi["count"],
+            "agreement_rate_mean": agreement_rate,
+            "disagreement_rate": multi["disagreements"] / float(multi["count"]),
+            "disagreement_examples": multi["disagreement_examples"],
+        }
+    return out
+
+
 def _resolve_status(cancel_path: Path, results: Sequence[TrialResult]) -> RunStatus:
     if cancel_path.exists() or any((r.error or "").lower() == "cancelled" for r in results):
         return RunStatus.cancelled
@@ -233,6 +332,9 @@ def _finalize_run(
 
     status = _resolve_status(cancel_path, results)
     lo, hi = _wilson_ci95(passed, max(1, len(results)))
+    scores = _collect_trial_scores(results)
+    score_var, score_std = _score_variance(scores)
+    judge_stats = _compute_judge_stats(results)
     run_result = RunResult(
         run_id=summary.run_id,
         suite_id=summary.suite_id,
@@ -249,6 +351,9 @@ def _finalize_run(
             "pass_pow_k": pass_pow_k,
             "trial_pass_rate": (passed / len(results)) if results else 0.0,
             "trial_pass_rate_ci95": [lo, hi],
+            "score_variance": score_var,
+            "score_stddev": score_std,
+            "judge": judge_stats or None,
         },
         per_task={
             tid: {
