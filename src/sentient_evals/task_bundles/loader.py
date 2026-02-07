@@ -55,6 +55,8 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
     allow_internet = bool(env_cfg.get("allow_internet", True))
     build_timeout_sec = env_cfg.get("build_timeout_sec")
     platform = env_cfg.get("platform")
+    workdir = env_cfg.get("workdir")
+    workspace_mount = env_cfg.get("workspace_mount")
 
     res_cfg = dict(env_cfg.get("resources") or {})
     resources = EnvironmentResources(
@@ -71,6 +73,8 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
             resources=resources,
             image=env_cfg.get("image"),
             platform=platform,
+            workdir=workdir,
+            workspace_mount=workspace_mount,
         )
 
     lp_cfg = dict(cfg.get("local_python") or {})
@@ -136,4 +140,3 @@ def load_task_bundles(tasks_dir: Path) -> list[TaskBundle]:
         if (child / "task.toml").exists():
             bundles.append(load_task_bundle(child))
     return bundles
-

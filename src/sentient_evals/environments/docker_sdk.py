@@ -31,6 +31,8 @@ class DockerSDKEnvironment(BaseEnvironment):
         task_digest: str | None,
         image_tag_prefix: str,
         platform: str | None = None,
+        workdir: str | None = None,
+        workspace_mount: str | None = None,
     ):
         super().__init__(trial_id=trial_id, workspace_dir=workspace_dir, logs_dir=logs_dir, config=config)
         self.environment_dir = environment_dir
@@ -41,6 +43,37 @@ class DockerSDKEnvironment(BaseEnvironment):
         self._container: Any | None = None
         self._image: str | None = None
         self._container_suffix = uuid.uuid4().hex[:8]
+        self._workdir = self._normalize_path(workdir) if workdir else self._parse_workdir()
+        if workspace_mount:
+            self._workspace_mount = self._normalize_path(workspace_mount)
+        elif self._workdir == "/testbed":
+            self._workspace_mount = "/workspace"
+        else:
+            self._workspace_mount = self._workdir
+        self.tests_dir = workspace_dir.parent / "tests"
+
+    def _normalize_path(self, path: str | None) -> str:
+        if not path:
+            return ""
+        if not path.startswith("/"):
+            return f"/{path}"
+        return path.rstrip("/") or "/"
+
+    def _parse_workdir(self) -> str:
+        """Extract WORKDIR from task Dockerfile. Defaults to /workspace."""
+        if self.environment_dir is None:
+            return "/workspace"
+        dockerfile = self.environment_dir / "Dockerfile"
+        if not dockerfile.exists():
+            return "/workspace"
+        try:
+            content = dockerfile.read_text()
+            import re
+
+            matches = re.findall(r'^WORKDIR\s+([^\s#]+)', content, re.MULTILINE)
+            return matches[-1].rstrip('/') if matches else "/workspace"
+        except Exception:
+            return "/workspace"
 
     async def start(self, *, force_build: bool = False) -> None:
         try:
@@ -56,6 +89,7 @@ class DockerSDKEnvironment(BaseEnvironment):
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.tests_dir.mkdir(parents=True, exist_ok=True)
 
         loop = asyncio.get_running_loop()
 
@@ -99,15 +133,21 @@ class DockerSDKEnvironment(BaseEnvironment):
                 ["sh", "-lc", "tail -f /dev/null"],
                 name=self._container_name(),
                 detach=True,
-                working_dir="/workspace",
+                working_dir=self._workdir,
                 platform=self.platform,
                 volumes={
-                    str(self.workspace_dir): {"bind": "/workspace", "mode": "rw"},
+                    str(self.workspace_dir): {"bind": self._workspace_mount, "mode": "rw"},
                     str(self.logs_dir): {"bind": "/logs", "mode": "rw"},
+                    str(self.tests_dir): {"bind": "/tests", "mode": "rw"},
                 },
                 network_mode=network_mode,
                 **host_cfg,
             )
+            # Write container name for cleanup on interrupt
+            try:
+                (self.logs_dir / "container_name.txt").write_text(self._container_name() + "\n", encoding="utf-8")
+            except Exception:
+                pass
 
         await loop.run_in_executor(None, _setup)
 
@@ -135,7 +175,7 @@ class DockerSDKEnvironment(BaseEnvironment):
         def _run() -> _SDKRes:
             started = loop.time()
             full = ["sh", "-lc", cmd]
-            r = self._container.exec_run(full, workdir="/workspace", demux=True)
+            r = self._container.exec_run(full, workdir=self._workdir, demux=True)
             dur_ms = int((loop.time() - started) * 1000)
             out = r.output or (b"", b"")
             stdout_b, stderr_b = out if isinstance(out, tuple) else (out, b"")
@@ -150,12 +190,12 @@ class DockerSDKEnvironment(BaseEnvironment):
         return ExecResult(stdout=r.stdout, stderr=r.stderr, exit_code=r.exit_code, duration_ms=r.duration_ms)
 
     async def upload_file(self, source_path: Path, target_path: str) -> None:
-        target = (self.workspace_dir / target_path).resolve()
+        target = self._map_container_path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source_path.read_bytes())
 
     async def upload_dir(self, source_dir: Path, target_dir: str) -> None:
-        dst = (self.workspace_dir / target_dir).resolve()
+        dst = self._map_container_path(target_dir)
         dst.mkdir(parents=True, exist_ok=True)
         for p in sorted(source_dir.rglob("*")):
             rel = p.relative_to(source_dir)
@@ -167,12 +207,12 @@ class DockerSDKEnvironment(BaseEnvironment):
                 out.write_bytes(p.read_bytes())
 
     async def download_file(self, source_path: str, target_path: Path) -> None:
-        src = (self.workspace_dir / source_path).resolve()
+        src = self._map_container_path(source_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(src.read_bytes())
 
     async def download_dir(self, source_dir: str, target_dir: Path) -> None:
-        src = (self.workspace_dir / source_dir).resolve()
+        src = self._map_container_path(source_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
         for p in sorted(src.rglob("*")):
             rel = p.relative_to(src)
@@ -188,3 +228,17 @@ class DockerSDKEnvironment(BaseEnvironment):
         safe = "".join([c if c.isalnum() or c in "_.-" else "_" for c in self.trial_id])
         return f"sentient-evals__{safe[:120]}__{self._container_suffix}"
 
+    def _map_container_path(self, path: str) -> Path:
+        if path.startswith("/tests"):
+            base = self.tests_dir
+            rel_path = path[6:].lstrip("/")
+            return (base / rel_path).resolve() if rel_path else base
+        if path.startswith("/logs"):
+            base = self.logs_dir
+            rel_path = path[5:].lstrip("/")
+            return (base / rel_path).resolve() if rel_path else base
+        if path.startswith(self._workspace_mount):
+            prefix_len = len(self._workspace_mount)
+            rel_path = path[prefix_len:].lstrip("/")
+            return (self.workspace_dir / rel_path).resolve() if rel_path else self.workspace_dir
+        return (self.workspace_dir / path).resolve()

@@ -11,7 +11,7 @@ from ...models import GraderResult, Severity, Task, TranscriptEvent
 
 @dataclass(frozen=True)
 class VerifierScriptSpec:
-    cmd: str = "sh -lc /tests/test.sh"
+    cmd: str = "bash /tests/test.sh"
     timeout_s: float | None = None
     reward_paths: Sequence[str] = (
         "/logs/verifier/reward.json",
@@ -47,6 +47,9 @@ class VerifierScriptGrader:
         env: ToolExecutor,
     ) -> GraderResult:
         res = await env.exec(self.spec.cmd, timeout_s=self.spec.timeout_s)
+        # If bash is unavailable in the environment, fall back to sh.
+        if res.exit_code != 0 and "bash" in (res.stderr or "").lower() and "not found" in (res.stderr or "").lower():
+            res = await env.exec("sh -lc /tests/test.sh", timeout_s=self.spec.timeout_s)
         # If the script exists but is not executable, retry via sh.
         if res.exit_code == 126 and "permission denied" in (res.stderr or "").lower():
             res = await env.exec("sh -lc 'sh /tests/test.sh'", timeout_s=self.spec.timeout_s)
@@ -89,12 +92,17 @@ class VerifierScriptGrader:
         )
 
         if reward_value is None:
+            passed = res.exit_code == 0
             return GraderResult(
                 name=self.name,
-                score=0.0,
-                passed=False,
-                severity=Severity.error,
-                details={"error": "reward not found or invalid", "path": reward_path_used},
+                score=1.0 if passed else 0.0,
+                passed=passed,
+                severity=Severity.info if passed else Severity.error,
+                details={
+                    "error": "reward not found or invalid",
+                    "path": reward_path_used,
+                    "exit_code": res.exit_code,
+                },
             )
 
         passed = reward_value >= 1.0

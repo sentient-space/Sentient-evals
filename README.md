@@ -123,12 +123,12 @@ Notes:
 
 By default, results are written under `jobs/<run_id>/`:
 
-- `jobs/<run_id>/config.json`
-- `jobs/<run_id>/result.json`
-- `jobs/<run_id>/trials/<trial_id>/config.json`
+- `jobs/<run_id>/run_config.json`
+- `jobs/<run_id>/run_result.json`
+- `jobs/<run_id>/trials/<trial_id>/trial_config.json`
 - `jobs/<run_id>/trials/<trial_id>/trajectory.json`
 - `jobs/<run_id>/trials/<trial_id>/outcome.json`
-- `jobs/<run_id>/trials/<trial_id>/result.json`
+- `jobs/<run_id>/trials/<trial_id>/trial_result.json`
 - `jobs/<run_id>/trials/<trial_id>/judge/` (optional judge artifacts)
 - `jobs/<run_id>/trials/<trial_id>/verifier/` (optional verifier artifacts)
 
@@ -138,14 +138,14 @@ Example directory structure for a run with one trial using an LLM-as-judge grade
 
 ```
 jobs/my-run-2025-01-20/
-├── config.json                    # Run-level configuration
-├── result.json                    # Run-level aggregated results
+├── run_config.json                # Run-level configuration
+├── run_result.json                # Run-level aggregated results
 └── trials/
     └── task1__0/
-        ├── config.json            # Trial configuration (seed, adapter, etc.)
+        ├── trial_config.json      # Trial configuration (seed, adapter, etc.)
         ├── trajectory.json        # ATIF trajectory (full run)
         ├── outcome.json           # Final environment state snapshot
-        ├── result.json            # Trial-level grader results
+        ├── trial_result.json      # Trial-level grader results
         ├── judge/                 # LLM judge artifacts (when using LLM graders)
         │   ├── prompt.txt         # Judge prompt sent to LLM
         │   ├── response.json      # Raw LLM response (full API response)
@@ -155,7 +155,7 @@ jobs/my-run-2025-01-20/
             └── test_output.txt    # Example: test stdout/stderr
 ```
 
-### Example: `jobs/my-run-2025-01-20/config.json`
+### Example: `jobs/my-run-2025-01-20/run_config.json`
 
 ```json
 {
@@ -175,7 +175,7 @@ jobs/my-run-2025-01-20/
 }
 ```
 
-### Example: `jobs/my-run-2025-01-20/result.json`
+### Example: `jobs/my-run-2025-01-20/run_result.json`
 
 ```json
 {
@@ -206,4 +206,3 @@ jobs/my-run-2025-01-20/
 ## License
 
 Apache-2.0. See `LICENSE`.
-
