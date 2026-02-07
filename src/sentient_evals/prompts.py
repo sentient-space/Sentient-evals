@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import os
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -172,22 +173,18 @@ def prompt_model_name(adapter: str) -> str | None:
 
 
 def prompt_github_token() -> str | None:
-    """
-    Prompt user for GitHub token for extended rate limits.
+
+    from .config import get_saved_github_token, save_github_token, CONFIG_FILE
     
-    Checks saved config first, then prompts if needed.
-    Offers to save token for future use.
-    
-    Returns:
-        GitHub token string or None if user skips/cancels
-    """
-    from .config import get_github_token, save_github_token, CONFIG_FILE
-    
-    # Check if we already have a saved token
-    saved_token = get_github_token()
+    saved_token = get_saved_github_token()
     if saved_token:
         console.print(f"[dim]Using saved GitHub token from {CONFIG_FILE}[/dim]")
         return saved_token
+
+    env_token = os.environ.get("GITHUB_TOKEN")
+    if env_token:
+        console.print("[dim]Using GitHub token from GITHUB_TOKEN environment variable[/dim]")
+        return env_token
     
     try:
         console.print(
@@ -208,7 +205,6 @@ def prompt_github_token() -> str | None:
         if token:
             console.print("[green]✓ Token accepted[/green]")
             
-            # Offer to save for future use
             if INQUIRER_AVAILABLE:
                 save_it = inquirer.confirm(
                     message="Save token for future use?",

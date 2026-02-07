@@ -62,7 +62,11 @@ def get_github_token() -> str | None:
     env_token = os.environ.get("GITHUB_TOKEN")
     if env_token:
         return env_token
-    
+    return get_saved_github_token()
+
+
+def get_saved_github_token() -> str | None:
+    """Get GitHub token stored in the config file (ignores environment)."""
     config = load_config()
     return config.get("github_token")
 

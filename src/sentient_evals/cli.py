@@ -11,6 +11,7 @@ import getpass
 import contextlib
 import subprocess
 import shutil
+from collections import Counter
 
 import typer
 from rich.console import Console
@@ -29,7 +30,13 @@ from .registry import build_adapter, build_grader
 from .datasets import DatasetClient, RegistryClientFactory
 from .datasets.registry.base import BaseRegistryClient
 from .prompts import select_adapter, select_dataset, select_environment, prompt_model_name, prompt_github_token
-from .config import get_github_token, save_github_token, clear_github_token, CONFIG_FILE
+from .config import (
+    get_github_token,
+    get_saved_github_token,
+    save_github_token,
+    clear_github_token,
+    CONFIG_FILE,
+)
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -195,10 +202,45 @@ def _dataset_cache_dir(name: str, version: str | None) -> Path:
     return Path.home() / ".cache" / "sentient-evals" / "datasets" / f"{name}@{safe_version}"
 
 
-def _count_cached_tasks(tasks_dir: Path) -> int:
+def _cached_task_counts(tasks_dir: Path) -> Counter[str]:
+    counts: Counter[str] = Counter()
     if not tasks_dir.exists():
-        return 0
-    return sum(1 for p in tasks_dir.iterdir() if p.is_dir() and (p / "task.toml").exists())
+        return counts
+    for p in tasks_dir.iterdir():
+        if p.is_dir() and (p / "task.toml").exists():
+            counts[p.name] += 1
+    return counts
+
+
+def _expected_task_counts(tasks) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for task in tasks:
+        name = Path(task.path).name
+        counts[name] += 1
+    return counts
+
+
+def _summarize_cache_mismatch(expected: Counter[str], cached: Counter[str]) -> dict[str, object]:
+    missing = expected - cached
+    extra = cached - expected
+
+    def _sample(counter: Counter[str], limit: int = 5) -> list[str]:
+        items: list[str] = []
+        for name in sorted(counter.keys()):
+            count = counter[name]
+            items.append(f"{name} (x{count})" if count > 1 else name)
+            if len(items) >= limit:
+                break
+        return items
+
+    return {
+        "expected_total": sum(expected.values()),
+        "cached_total": sum(cached.values()),
+        "missing_total": sum(missing.values()),
+        "extra_total": sum(extra.values()),
+        "missing_sample": _sample(missing),
+        "extra_sample": _sample(extra),
+    }
 
 
 def _resolve_dataset_tasks_dir(
@@ -212,20 +254,39 @@ def _resolve_dataset_tasks_dir(
         raise typer.BadParameter(f"Dataset '{name}@{spec.version}' has no tasks")
 
     cache_dir = _dataset_cache_dir(spec.name, spec.version)
-    cached_count = _count_cached_tasks(cache_dir)
+    expected = _expected_task_counts(spec.tasks)
+    cached = _cached_task_counts(cache_dir)
+    cached_count = sum(cached.values())
 
     if cached_count > 0:
-        use_cache = True
-        if sys.stdin.isatty():
-            use_cache = Confirm.ask(
-                f"Dataset cached ({cached_count} tasks). Use cached copy?",
-                default=True,
+        if cached != expected:
+            summary = _summarize_cache_mismatch(expected, cached)
+            console.print(
+                "[yellow]Cached dataset is incomplete or out-of-date; re-downloading.[/yellow]"
             )
-        if use_cache:
-            console.print(f"[green]Using cached dataset at {cache_dir}[/green]")
-            return cache_dir
-        # Refresh: wipe and re-download
-        shutil.rmtree(cache_dir, ignore_errors=True)
+            console.print(
+                f"[yellow]Expected {summary['expected_total']} tasks, found {summary['cached_total']} "
+                f"(missing {summary['missing_total']}, extra {summary['extra_total']}).[/yellow]"
+            )
+            if summary["missing_sample"]:
+                console.print(f"[yellow]Missing (sample): {', '.join(summary['missing_sample'])}[/yellow]")
+            if summary["extra_sample"]:
+                console.print(f"[yellow]Extra (sample): {', '.join(summary['extra_sample'])}[/yellow]")
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            cached = Counter()
+            cached_count = 0
+        else:
+            use_cache = True
+            if sys.stdin.isatty():
+                use_cache = Confirm.ask(
+                    f"Dataset cached ({cached_count} tasks). Use cached copy?",
+                    default=True,
+                )
+            if use_cache:
+                console.print(f"[green]Using cached dataset at {cache_dir}[/green]")
+                return cache_dir
+            # Refresh: wipe and re-download
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     console.print(f"[cyan]Downloading dataset: {spec.name}@{spec.version}[/cyan]")
@@ -237,6 +298,14 @@ def _resolve_dataset_tasks_dir(
     )
     if not downloaded:
         raise typer.BadParameter(f"Dataset '{spec.name}@{spec.version}' has no tasks")
+    cached = _cached_task_counts(cache_dir)
+    if cached != expected:
+        summary = _summarize_cache_mismatch(expected, cached)
+        raise typer.BadParameter(
+            "Downloaded dataset cache is incomplete. "
+            f"Expected {summary['expected_total']} tasks, found {summary['cached_total']} "
+            f"(missing {summary['missing_total']}, extra {summary['extra_total']})."
+        )
     console.print(f"[green]Downloaded {len(downloaded)} task(s) to {cache_dir}[/green]")
     return cache_dir
 
@@ -748,7 +817,7 @@ def auth_login():
     """Save GitHub token for authenticated API access."""
    
     
-    existing = get_github_token()
+    existing = get_saved_github_token()
     if existing:
         console.print(f"[yellow]Already logged in.[/yellow] Token saved in {CONFIG_FILE}")
         console.print("Run 'sentient-evals auth logout' to remove it first.")
@@ -779,8 +848,12 @@ def auth_login():
 @auth_app.command("logout")
 def auth_logout():
     """Remove saved GitHub token."""
-    existing = get_github_token()
+    existing = get_saved_github_token()
     if not existing:
+        if os.environ.get("GITHUB_TOKEN"):
+            console.print("[yellow]No saved token found. GITHUB_TOKEN is set in the environment.[/yellow]")
+            console.print("Unset GITHUB_TOKEN to fully log out.")
+            return
         console.print("[yellow]Not logged in. No token to remove.[/yellow]")
         return
     
@@ -792,16 +865,16 @@ def auth_logout():
 def auth_status():
     """Show authentication status."""
     env_token = os.environ.get("GITHUB_TOKEN")
-    saved_token = get_github_token()
+    saved_token = get_saved_github_token()
     
     if env_token:
         console.print("[green]✓ Authenticated via GITHUB_TOKEN environment variable[/green]")
         console.print(f"  Token: {env_token[:8]}...{env_token[-4:]}")
-    elif saved_token:
+    if saved_token:
         console.print(f"[green]✓ Authenticated via saved token[/green]")
         console.print(f"  Config: {CONFIG_FILE}")
         console.print(f"  Token: {saved_token[:8]}...{saved_token[-4:]}")
-    else:
+    if not env_token and not saved_token:
         console.print("[yellow]✗ Not authenticated[/yellow]")
         console.print("  Run 'sentient-evals auth login' to authenticate")
         console.print("  Or set GITHUB_TOKEN environment variable")
