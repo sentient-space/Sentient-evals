@@ -756,8 +756,8 @@ def diff(
     b_tasks = b.get("per_task") or {}
     c_tasks = c.get("per_task") or {}
     regressions = []
-    all_task_ids = sorted(set(b_tasks.keys()) | set(c_tasks.keys()))
-    for tid in all_task_ids:
+    shared_task_ids = sorted(set(b_tasks.keys()) & set(c_tasks.keys()))
+    for tid in shared_task_ids:
         b_rate = (b_tasks.get(tid, {}) or {}).get("pass_rate", 0.0)
         c_rate = (c_tasks.get(tid, {}) or {}).get("pass_rate", 0.0)
         try:
@@ -766,6 +766,9 @@ def diff(
             continue
         if delta < 0:
             regressions.append((tid, b_rate, c_rate, delta))
+
+    missing_baseline = sorted(set(c_tasks.keys()) - set(b_tasks.keys()))
+    missing_candidate = sorted(set(b_tasks.keys()) - set(c_tasks.keys()))
 
     if regressions:
         reg_table = Table(title="regressions (pass_rate)")
@@ -783,6 +786,25 @@ def diff(
         console.print(reg_table)
     else:
         console.print("[green]No regressions detected (per-task pass_rate).[/green]")
+
+    if missing_baseline or missing_candidate:
+        mtable = Table(title="task mismatch")
+        mtable.add_column("side")
+        mtable.add_column("count")
+        mtable.add_column("sample")
+        if missing_baseline:
+            mtable.add_row(
+                "baseline missing",
+                str(len(missing_baseline)),
+                ", ".join(missing_baseline[:10]),
+            )
+        if missing_candidate:
+            mtable.add_row(
+                "candidate missing",
+                str(len(missing_candidate)),
+                ", ".join(missing_candidate[:10]),
+            )
+        console.print(mtable)
 
 
 schema_app = typer.Typer(no_args_is_help=True)
