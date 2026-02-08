@@ -20,6 +20,7 @@ class BaseEnvironmentSpec(BaseModel):
     allow_internet: bool = True
     resources: EnvironmentResources = Field(default_factory=EnvironmentResources)
     build_timeout_sec: float | None = None
+    provider_concurrency: int | None = None
 
 
 class LocalPythonEnvironmentSpec(BaseEnvironmentSpec):

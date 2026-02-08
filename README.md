@@ -118,6 +118,8 @@ Supported `--env` values:
 Notes:
 - Docker-based runs require Docker (or Podman) installed and running.
 - For parallel sandboxed evals, prefer `docker_cli` locally or `daytona` in the cloud.
+- Cloud backends currently assume **single-container** tasks (multi-container orchestration is not yet supported).
+- You can throttle cloud provider concurrency per task bundle via `environment.provider_concurrency` in `task.toml`.
 
 ## Output layout (local runs)
 

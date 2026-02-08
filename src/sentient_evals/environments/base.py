@@ -24,6 +24,7 @@ class EnvironmentConfig:
     storage_mb: int | None = None
     gpus: int | None = None
     build_timeout_sec: float | None = None
+    provider_concurrency: int | None = None
 
 
 class BaseEnvironment(ABC):
@@ -60,4 +61,3 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     async def download_dir(self, source_dir: str, target_dir: Path) -> None: ...
-

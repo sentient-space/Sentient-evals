@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from math import sqrt
 from typing import Any, Callable, Literal, Sequence, TypeVar
+from contextlib import asynccontextmanager
 
 from .adapters import AgentAdapter
 from .atif.converters import transcript_to_trajectory
@@ -380,6 +381,25 @@ def _adapter_version(adapter: AgentAdapter) -> str:
         return version_attr
     return "unknown"
 
+
+def _min_provider_limit(bundles: Sequence[TaskBundle]) -> int | None:
+    limit: int | None = None
+    for bundle in bundles:
+        candidate = getattr(bundle.env, "provider_concurrency", None)
+        if candidate is None:
+            continue
+        limit = candidate if limit is None else min(limit, candidate)
+    return limit
+
+
+@asynccontextmanager
+async def _maybe_acquire(sem: asyncio.Semaphore | None):
+    if sem is None:
+        yield
+        return
+    async with sem:
+        yield
+
 async def run_suite(
     *,
     tasks: Sequence[Task],
@@ -619,6 +639,8 @@ async def run_suite_bundles(
     )
 
     sem = asyncio.Semaphore(cfg.suite.concurrency)
+    provider_limit = _min_provider_limit(bundles) if cfg.env_type == EnvironmentType.daytona else None
+    provider_sem = asyncio.Semaphore(provider_limit) if provider_limit else None
     results: list[TrialResult] = []
 
     if cfg.mode == "resume":
@@ -627,231 +649,233 @@ async def run_suite_bundles(
         )
 
     async def _run_one(bundle: TaskBundle, attempt: int, seed: int) -> TrialResult:
-        async with sem:
-            if cancel_path.exists():
-                _emit_event(
-                    on_event, "trial_cancelled", trial_id=_trial_id(bundle.task.id, attempt), task_id=bundle.task.id
+        async with _maybe_acquire(provider_sem):
+            async with sem:
+                if cancel_path.exists():
+                    _emit_event(
+                        on_event, "trial_cancelled", trial_id=_trial_id(bundle.task.id, attempt), task_id=bundle.task.id
+                    )
+                    return TrialResult(
+                        ok=False,
+                        task_id=bundle.task.id,
+                        trial_id=_trial_id(bundle.task.id, attempt),
+                        adapter=cfg.adapter_name,
+                        seed=seed,
+                        started_at=utcnow(),
+                        graders=[],
+                        error="cancelled",
+                    )
+
+                trial_id = _trial_id(bundle.task.id, attempt)
+                _emit_event(on_event, "trial_start", trial_id=trial_id, task_id=bundle.task.id)
+                writer.ensure_trial_dirs(trial_id)
+                transcript = []
+                outcome: Outcome = Outcome(summary=None, data={})
+                err: str | None = None
+                ok = False
+
+                trial_dir = writer.trial_dir(trial_id)
+                workspace_dir = trial_dir / "workspace"
+                logs_dir = trial_dir / "env_logs"
+                replay_log = trial_dir / "replay" / "tool_calls.jsonl"
+                error_path = trial_dir / "error.txt"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+
+                env_cfg = EnvironmentConfig(
+                    allow_internet=bundle.env.allow_internet,
+                    cpus=bundle.env.resources.cpus,
+                    memory_mb=bundle.env.resources.memory_mb,
+                    storage_mb=bundle.env.resources.storage_mb,
+                    gpus=bundle.env.resources.gpus,
+                    build_timeout_sec=bundle.env.build_timeout_sec,
+                    provider_concurrency=bundle.env.provider_concurrency,
                 )
-                return TrialResult(
-                    ok=False,
+
+
+                env_type = cfg.env_type
+                container_image = None
+                if getattr(bundle.env, "type", None) == "container":
+                    container_image = getattr(bundle.env, "image", None)
+                container_platform = None
+                if getattr(bundle.env, "type", None) == "container":
+                    container_platform = getattr(bundle.env, "platform", None)
+                container_workdir = None
+                container_workspace_mount = None
+                if getattr(bundle.env, "type", None) == "container":
+                    container_workdir = getattr(bundle.env, "workdir", None)
+                    container_workspace_mount = getattr(bundle.env, "workspace_mount", None)
+
+                trial_cfg = TrialConfig(
+                    run_id=cfg.run_id,
+                    trial_id=trial_id,
                     task_id=bundle.task.id,
-                    trial_id=_trial_id(bundle.task.id, attempt),
-                    adapter=cfg.adapter_name,
                     seed=seed,
-                    started_at=utcnow(),
-                    graders=[],
-                    error="cancelled",
+                    attempt=attempt,
+                    adapter=cfg.adapter_name,
+                    provenance={
+                        "env_type": env_type.value,
+                        "task_bundle_digest": bundle.digest,
+                        "container_image": container_image,
+                        "allow_internet": bundle.env.allow_internet,
+                        "resources": bundle.env.resources.model_dump(),
+                    },
+                )
+                writer.write_trial_config(trial_cfg)
+
+                started_at = trial_cfg.started_at
+
+                environment = EnvironmentFactory.create(
+                    env_type=env_type,
+                    trial_id=trial_id,
+                    workspace_dir=workspace_dir,
+                    logs_dir=logs_dir,
+                    cfg=env_cfg,
+                    task_environment_dir=bundle.environment_dir,
+                    task_files_dir=bundle.files_dir,
+                    task_digest=bundle.digest,
+                    container_image=container_image,
+                    container_platform=container_platform,
+                    container_workdir=container_workdir,
+                    container_workspace_mount=container_workspace_mount,
+                    docker_image_tag_prefix=cfg.docker_image_tag_prefix,
+                    daytona_snapshot_template=cfg.daytona_snapshot_template,
+                    daytona_network_block_all=cfg.daytona_network_block_all,
                 )
 
-            trial_id = _trial_id(bundle.task.id, attempt)
-            _emit_event(on_event, "trial_start", trial_id=trial_id, task_id=bundle.task.id)
-            writer.ensure_trial_dirs(trial_id)
-            transcript = []
-            outcome: Outcome = Outcome(summary=None, data={})
-            err: str | None = None
-            ok = False
+                recorder: RecordingToolExecutor | None = None
+                tool_env = EnvironmentToolExecutor(environment)
+                tool_executor = tool_env
+                if cfg.replay_mode == "record":
+                    recorder = RecordingToolExecutor(tool_env, log_path=replay_log)
+                    tool_executor = recorder
+                elif cfg.replay_mode == "replay":
+                    tool_executor = ReplayingToolExecutor(log_path=replay_log, strict=cfg.strict_replay)
 
-            trial_dir = writer.trial_dir(trial_id)
-            workspace_dir = trial_dir / "workspace"
-            logs_dir = trial_dir / "env_logs"
-            replay_log = trial_dir / "replay" / "tool_calls.jsonl"
-            error_path = trial_dir / "error.txt"
-            logs_dir.mkdir(parents=True, exist_ok=True)
-
-            env_cfg = EnvironmentConfig(
-                allow_internet=bundle.env.allow_internet,
-                cpus=bundle.env.resources.cpus,
-                memory_mb=bundle.env.resources.memory_mb,
-                storage_mb=bundle.env.resources.storage_mb,
-                gpus=bundle.env.resources.gpus,
-                build_timeout_sec=bundle.env.build_timeout_sec,
-            )
-
-
-            env_type = cfg.env_type
-            container_image = None
-            if getattr(bundle.env, "type", None) == "container":
-                container_image = getattr(bundle.env, "image", None)
-            container_platform = None
-            if getattr(bundle.env, "type", None) == "container":
-                container_platform = getattr(bundle.env, "platform", None)
-            container_workdir = None
-            container_workspace_mount = None
-            if getattr(bundle.env, "type", None) == "container":
-                container_workdir = getattr(bundle.env, "workdir", None)
-                container_workspace_mount = getattr(bundle.env, "workspace_mount", None)
-
-            trial_cfg = TrialConfig(
-                run_id=cfg.run_id,
-                trial_id=trial_id,
-                task_id=bundle.task.id,
-                seed=seed,
-                attempt=attempt,
-                adapter=cfg.adapter_name,
-                provenance={
-                    "env_type": env_type.value,
-                    "task_bundle_digest": bundle.digest,
-                    "container_image": container_image,
-                    "allow_internet": bundle.env.allow_internet,
-                    "resources": bundle.env.resources.model_dump(),
-                },
-            )
-            writer.write_trial_config(trial_cfg)
-
-            started_at = trial_cfg.started_at
-
-            environment = EnvironmentFactory.create(
-                env_type=env_type,
-                trial_id=trial_id,
-                workspace_dir=workspace_dir,
-                logs_dir=logs_dir,
-                cfg=env_cfg,
-                task_environment_dir=bundle.environment_dir,
-                task_files_dir=bundle.files_dir,
-                task_digest=bundle.digest,
-                container_image=container_image,
-                container_platform=container_platform,
-                container_workdir=container_workdir,
-                container_workspace_mount=container_workspace_mount,
-                docker_image_tag_prefix=cfg.docker_image_tag_prefix,
-                daytona_snapshot_template=cfg.daytona_snapshot_template,
-                daytona_network_block_all=cfg.daytona_network_block_all,
-            )
-
-            recorder: RecordingToolExecutor | None = None
-            tool_env = EnvironmentToolExecutor(environment)
-            tool_executor = tool_env
-            if cfg.replay_mode == "record":
-                recorder = RecordingToolExecutor(tool_env, log_path=replay_log)
-                tool_executor = recorder
-            elif cfg.replay_mode == "replay":
-                tool_executor = ReplayingToolExecutor(log_path=replay_log, strict=cfg.strict_replay)
-
-            grader_results = []
-            try:
-                _emit_event(on_event, "env_start", trial_id=trial_id, task_id=bundle.task.id)
-                await environment.start(force_build=False)
-                _emit_event(on_event, "env_ready", trial_id=trial_id, task_id=bundle.task.id)
+                grader_results = []
+                try:
+                    _emit_event(on_event, "env_start", trial_id=trial_id, task_id=bundle.task.id)
+                    await environment.start(force_build=False)
+                    _emit_event(on_event, "env_ready", trial_id=trial_id, task_id=bundle.task.id)
                
-                if bundle.files_dir is not None and bundle.files_dir.exists():
-                    await environment.upload_dir(bundle.files_dir, ".")
-                if bundle.tests_dir is not None and bundle.tests_dir.exists():
-                    await environment.upload_dir(bundle.tests_dir, "/tests")
+                    if bundle.files_dir is not None and bundle.files_dir.exists():
+                        await environment.upload_dir(bundle.files_dir, ".")
+                    if bundle.tests_dir is not None and bundle.tests_dir.exists():
+                        await environment.upload_dir(bundle.tests_dir, "/tests")
                     
-                    await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
+                        await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
 
-                artifacts = TrialArtifacts(writer.trial_dir(trial_id))
-                _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
-                timeout_s = bundle.task.timeout_seconds
-                if timeout_s is not None and timeout_s > 0:
-                    transcript, outcome = await asyncio.wait_for(
-                        _call_adapter(
+                    artifacts = TrialArtifacts(writer.trial_dir(trial_id))
+                    _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
+                    timeout_s = bundle.task.timeout_seconds
+                    if timeout_s is not None and timeout_s > 0:
+                        transcript, outcome = await asyncio.wait_for(
+                            _call_adapter(
+                                adapter=adapter,
+                                task=bundle.task,
+                                instruction=bundle.instruction or _best_effort_instruction(bundle.task),
+                                seed=seed,
+                                env=tool_executor,
+                                artifacts=artifacts,
+                            ),
+                            timeout=timeout_s,
+                        )
+                    else:
+                        transcript, outcome = await _call_adapter(
                             adapter=adapter,
                             task=bundle.task,
                             instruction=bundle.instruction or _best_effort_instruction(bundle.task),
                             seed=seed,
                             env=tool_executor,
                             artifacts=artifacts,
-                        ),
-                        timeout=timeout_s,
-                    )
-                else:
-                    transcript, outcome = await _call_adapter(
-                        adapter=adapter,
-                        task=bundle.task,
-                        instruction=bundle.instruction or _best_effort_instruction(bundle.task),
-                        seed=seed,
-                        env=tool_executor,
-                        artifacts=artifacts,
-                    )
-                ok = True
-                _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=bundle.task.id)
-                if ok:
-                    _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=bundle.task.id)
-                    for g in graders:
-                        try:
-                            if supports_env_grading(g):
-                                result = await g.grade_with_env(  # type: ignore[attr-defined]
-                                    task=bundle.task,
-                                    transcript=transcript,
-                                    outcome=outcome.data,
-                                    artifacts=artifacts,
-                                    env=tool_executor,
-                                )
-                            else:
-                                result = await g.grade(
-                                    task=bundle.task,
-                                    transcript=transcript,
-                                    outcome=outcome.data,
-                                    artifacts=artifacts,
-                                )
-                        except Exception as exc:  # pragma: no cover
-                            artifacts.verifier().write_json(
-                                f"grader_error_{getattr(g, 'name', 'unknown')}.json",
-                                {"error": str(exc)},
-                            )
-                            result = GraderResult(
-                                name=getattr(g, "name", "unknown"),
-                                score=0.0,
-                                passed=False,
-                                severity=Severity.error,
-                                details={"error": str(exc)},
                         )
-                        grader_results.append(result)
-                    _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)
-            except asyncio.TimeoutError:
-                err = f"timeout after {bundle.task.timeout_seconds}s"
-                ok = False
-                error_path.write_text(err, encoding="utf-8")
-                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
-            except Exception as e:  # pragma: no cover
-                err = str(e)
-                ok = False
-                error_path.write_text(traceback.format_exc(), encoding="utf-8")
-                _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
-            finally:
-                try:
-                    await environment.stop(delete=True)
-                except Exception:  # pragma: no cover
-                    cleanup_error = logs_dir / "cleanup_error.txt"
-                    cleanup_error.write_text(traceback.format_exc(), encoding="utf-8")
-                if recorder is not None:
-                    recorder.close()
+                    ok = True
+                    _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=bundle.task.id)
+                    if ok:
+                        _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=bundle.task.id)
+                        for g in graders:
+                            try:
+                                if supports_env_grading(g):
+                                    result = await g.grade_with_env(  # type: ignore[attr-defined]
+                                        task=bundle.task,
+                                        transcript=transcript,
+                                        outcome=outcome.data,
+                                        artifacts=artifacts,
+                                        env=tool_executor,
+                                    )
+                                else:
+                                    result = await g.grade(
+                                        task=bundle.task,
+                                        transcript=transcript,
+                                        outcome=outcome.data,
+                                        artifacts=artifacts,
+                                    )
+                            except Exception as exc:  # pragma: no cover
+                                artifacts.verifier().write_json(
+                                    f"grader_error_{getattr(g, 'name', 'unknown')}.json",
+                                    {"error": str(exc)},
+                                )
+                                result = GraderResult(
+                                    name=getattr(g, "name", "unknown"),
+                                    score=0.0,
+                                    passed=False,
+                                    severity=Severity.error,
+                                    details={"error": str(exc)},
+                            )
+                            grader_results.append(result)
+                        _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)
+                except asyncio.TimeoutError:
+                    err = f"timeout after {bundle.task.timeout_seconds}s"
+                    ok = False
+                    error_path.write_text(err, encoding="utf-8")
+                    _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
+                except Exception as e:  # pragma: no cover
+                    err = str(e)
+                    ok = False
+                    error_path.write_text(traceback.format_exc(), encoding="utf-8")
+                    _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
+                finally:
+                    try:
+                        await environment.stop(delete=True)
+                    except Exception:  # pragma: no cover
+                        cleanup_error = logs_dir / "cleanup_error.txt"
+                        cleanup_error.write_text(traceback.format_exc(), encoding="utf-8")
+                    if recorder is not None:
+                        recorder.close()
 
-            trajectory = transcript_to_trajectory(
-                transcript,
-                session_id=trial_id,
-                agent_name=getattr(adapter, "name", cfg.adapter_name),
-                agent_version=_adapter_version(adapter),
-                model_name=getattr(adapter, "model_name", None),
-            )
-            transcript_path = writer.write_transcript(trial_id, transcript)
-            trajectory_path = writer.write_trajectory(trial_id, trajectory)
-            outcome_path = writer.write_outcome(trial_id, outcome)
+                trajectory = transcript_to_trajectory(
+                    transcript,
+                    session_id=trial_id,
+                    agent_name=getattr(adapter, "name", cfg.adapter_name),
+                    agent_version=_adapter_version(adapter),
+                    model_name=getattr(adapter, "model_name", None),
+                )
+                transcript_path = writer.write_transcript(trial_id, transcript)
+                trajectory_path = writer.write_trajectory(trial_id, trajectory)
+                outcome_path = writer.write_outcome(trial_id, outcome)
 
-            trial_result = TrialResult(
-                ok=ok,
-                task_id=bundle.task.id,
-                trial_id=trial_id,
-                adapter=cfg.adapter_name,
-                seed=seed,
-                started_at=started_at,
-                transcript_path=str(transcript_path.relative_to(writer.run_dir)),
-                trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
-                outcome_path=str(outcome_path.relative_to(writer.run_dir)),
-                graders=grader_results,
-                error=err,
-            )
-            writer.write_result(trial_id, trial_result)
-            _emit_event(
-                on_event,
-                "trial_done",
-                trial_id=trial_id,
-                task_id=bundle.task.id,
-                ok=ok,
-                error=err,
-            )
-            return trial_result
+                trial_result = TrialResult(
+                    ok=ok,
+                    task_id=bundle.task.id,
+                    trial_id=trial_id,
+                    adapter=cfg.adapter_name,
+                    seed=seed,
+                    started_at=started_at,
+                    transcript_path=str(transcript_path.relative_to(writer.run_dir)),
+                    trajectory_path=str(trajectory_path.relative_to(writer.run_dir)),
+                    outcome_path=str(outcome_path.relative_to(writer.run_dir)),
+                    graders=grader_results,
+                    error=err,
+                )
+                writer.write_result(trial_id, trial_result)
+                _emit_event(
+                    on_event,
+                    "trial_done",
+                    trial_id=trial_id,
+                    task_id=bundle.task.id,
+                    ok=ok,
+                    error=err,
+                )
+                return trial_result
 
     if cancel_path.exists():
         new_results: list[TrialResult] = []
