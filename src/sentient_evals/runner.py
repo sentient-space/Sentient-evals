@@ -795,7 +795,7 @@ async def run_suite_bundles(
                                 score=0.0,
                                 passed=False,
                                 severity=Severity.error,
-                            details={"error": str(exc)},
+                                details={"error": str(exc)},
                         )
                         grader_results.append(result)
                     _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)

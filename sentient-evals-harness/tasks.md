@@ -219,16 +219,18 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
     - Keep the harness universal: registry is optional; local `--tasks-dir` remains supported.
   - **Done**: `datasets list/pull/path` + `tasks create` implemented. Docker environment dynamically detects WORKDIR from task Dockerfiles for Harbor compatibility (`/app`, `/testbed`, `/workspace`). Tests mounted at `/tests`, logs at `/logs`.
 
-- [ ] 7. Reporting + aggregation
+- [x] 7. Reporting + aggregation
   - Aggregate over trials (mean/variance, pass@k where relevant)
   - Per-suite dashboards in terminal output (summary + failure drill-down)
   - “Regression suite” mode (compare two runs; highlight deltas)
   - Add “judge reliability” reporting: agreement rates, tie rates, and examples of judge disagreement for calibration
+  - **Done**: Added score variance/stddev, run/report dashboards with failure drill-down, diff regression view, and judge reliability metrics (agreement/tie/examples).
 
-- [ ] 8. OSS CLI (local mode)
+- [x] 8. OSS CLI (local mode)
   - `sentient-evals run --suite ...`
   - `sentient-evals report --run ...`
   - `sentient-evals diff --baseline ... --candidate ...`
+  - **Done**: Implemented `run`, `report`, `diff` (suite via `--suite-id`/`--config`, report/diff take run dirs).
 
 - [ ] 9. Hosted mode: worker execution contract (Sentient backend + workers)
   - Define a minimal “run spec” and “trial spec” payload
@@ -243,7 +245,7 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
   - Create run, list runs, get run, cancel run
   - Results endpoints: summary + drill-down to trials + artifact links
 
-- [ ] 11. Optional: cloud sandbox provider adapters (Harbor-like scaling)
+- [ ] 11. cloud sandbox provider adapters (Harbor-like scaling)
   - Pluggable “sandbox backend” interface
   - First provider: pick one (e.g., Daytona/Modal/E2B), support single-container tasks initially
   - Document limitations (multi-container vs single-container)
