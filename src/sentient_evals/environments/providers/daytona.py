@@ -33,7 +33,7 @@ class _DaytonaClientManager:
     async def get(self) -> Any:
         async with self._client_lock:
             if self._client is None:
-                from daytona import AsyncDaytona  # type: ignore
+                from daytona import AsyncDaytona  
 
                 self._client = AsyncDaytona()
                 if not self._cleanup_registered:
@@ -96,7 +96,7 @@ class DaytonaProvider(CloudSandboxProvider):
     )
 
     async def create(self, params: SandboxCreateParams) -> Any:
-        from daytona import (  # type: ignore
+        from daytona import (  
             CreateSandboxFromImageParams,
             CreateSandboxFromSnapshotParams,
             Image,
@@ -183,7 +183,7 @@ class DaytonaProvider(CloudSandboxProvider):
     ) -> ExecResult:
         loop = asyncio.get_running_loop()
         started = loop.time()
-        resp = await sandbox.process.exec(  # type: ignore[attr-defined]
+        resp = await sandbox.process.exec(  
             command=command,
             cwd=cwd,
             env=env,
@@ -194,13 +194,13 @@ class DaytonaProvider(CloudSandboxProvider):
         return ExecResult(stdout=ex.stdout, stderr=ex.stderr, exit_code=ex.exit_code, duration_ms=dur_ms)
 
     async def upload_file(self, sandbox: Any, source_path: Path, target_path: str) -> None:
-        await sandbox.fs.create_folder(str(Path(target_path).parent), "755")  # type: ignore[attr-defined]
-        await sandbox.fs.upload_file(str(source_path), target_path)  # type: ignore[attr-defined]
+        await sandbox.fs.create_folder(str(Path(target_path).parent), "755") 
+        await sandbox.fs.upload_file(str(source_path), target_path) 
 
     async def upload_dir(self, sandbox: Any, source_dir: Path, target_dir: str) -> None:
-        from daytona import FileUpload  # type: ignore
+        from daytona import FileUpload 
 
-        await sandbox.fs.create_folder(target_dir, "755")  # type: ignore[attr-defined]
+        await sandbox.fs.create_folder(target_dir, "755") 
         files: list[FileUpload] = []
         for p in sorted(source_dir.rglob("*")):
             if p.is_file() and not p.is_symlink():
@@ -210,21 +210,21 @@ class DaytonaProvider(CloudSandboxProvider):
             return
         batch = self.capabilities.max_upload_batch or len(files)
         for chunk in _chunked(files, batch):
-            await sandbox.fs.upload_files(files=chunk)  # type: ignore[attr-defined]
+            await sandbox.fs.upload_files(files=chunk) 
 
     async def download_file(self, sandbox: Any, source_path: str, target_path: Path) -> None:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        await sandbox.fs.download_file(source_path, str(target_path))  # type: ignore[attr-defined]
+        await sandbox.fs.download_file(source_path, str(target_path))  
 
     async def download_dir(self, sandbox: Any, source_dir: str, target_dir: Path) -> None:
-        from daytona import FileDownloadRequest  # type: ignore
+        from daytona import FileDownloadRequest  
 
         target_dir.mkdir(parents=True, exist_ok=True)
-        search_result = await sandbox.fs.search_files(source_dir, "*")  # type: ignore[attr-defined]
+        search_result = await sandbox.fs.search_files(source_dir, "*") 
 
         file_downloads = []
         for file_path in search_result.files:
-            file_info = await sandbox.fs.get_file_info(file_path)  # type: ignore[attr-defined]
+            file_info = await sandbox.fs.get_file_info(file_path)  
             if getattr(file_info, "is_dir", False):
                 continue
             path_obj = Path(file_path)
@@ -238,7 +238,7 @@ class DaytonaProvider(CloudSandboxProvider):
                 )
             )
         if file_downloads:
-            await sandbox.fs.download_files(files=file_downloads)  # type: ignore[attr-defined]
+            await sandbox.fs.download_files(files=file_downloads) 
 
     async def _create_snapshot(self, snapshot_name: str, params: SandboxCreateParams) -> None:
         if params.dockerfile is None or params.context_dir is None:
