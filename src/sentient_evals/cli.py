@@ -681,6 +681,12 @@ def run(
                 assert effective_dir is not None
                 if bundles is None:
                     bundles = load_task_bundles(effective_dir)
+                if not bundles:
+                    raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
+                if limit_tasks is not None:
+                    if limit_tasks < 1:
+                        raise typer.BadParameter("--limit-tasks must be >= 1")
+                    bundles = bundles[:limit_tasks]
                 results, summary = asyncio.run(
                     run_suite_bundles(
                         bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg, on_event=on_event

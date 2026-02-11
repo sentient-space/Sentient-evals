@@ -389,6 +389,11 @@ def _min_provider_limit(bundles: Sequence[TaskBundle]) -> int | None:
         candidate = getattr(bundle.env, "provider_concurrency", None)
         if candidate is None:
             continue
+        if candidate < 1:
+            raise ValueError(
+                f"environment.provider_concurrency must be >= 1 for task '{bundle.task.id}'. "
+                f"Got {candidate}."
+            )
         limit = candidate if limit is None else min(limit, candidate)
     return limit
 
