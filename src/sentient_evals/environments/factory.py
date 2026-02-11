@@ -95,4 +95,16 @@ class EnvironmentFactory:
                 network_block_all=daytona_network_block_all,
             )
 
+        if env_type == EnvironmentType.e2b:
+            from .e2b import E2BEnvironment
+
+            return E2BEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                environment_dir=task_environment_dir,
+                image=container_image,
+            )
+
         raise ValueError(f"Unsupported environment type: {env_type}")

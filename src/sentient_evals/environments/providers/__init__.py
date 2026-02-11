@@ -5,6 +5,7 @@ from .base import (
     SandboxResources,
 )
 from .daytona import DaytonaProvider
+from .e2b import E2BProvider
 
 __all__ = [
     "CloudSandboxProvider",
@@ -12,4 +13,5 @@ __all__ = [
     "SandboxCreateParams",
     "SandboxResources",
     "DaytonaProvider",
+    "E2BProvider",
 ]

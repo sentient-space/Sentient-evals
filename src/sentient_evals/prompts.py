@@ -43,6 +43,7 @@ _ENVIRONMENT_TYPES = [
     "docker_sdk",
     "podman_cli",
     "daytona",
+    "e2b",
 ]
 
 _DEFAULT_MODELS = {

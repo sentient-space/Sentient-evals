@@ -18,6 +18,7 @@ from . import __version__
 from .artifacts import ArtifactWriter, TrialArtifacts
 from .env import EnvironmentToolExecutor, LocalToolExecutor, ToolExecutor
 from .environments.base import EnvironmentConfig, EnvironmentType
+from .environments.compatibility import collect_compatibility_issues
 from .environments.factory import EnvironmentFactory
 from .graders import Grader, supports_env_grading
 from .models import (
@@ -400,6 +401,7 @@ async def _maybe_acquire(sem: asyncio.Semaphore | None):
     async with sem:
         yield
 
+
 async def run_suite(
     *,
     tasks: Sequence[Task],
@@ -628,6 +630,18 @@ async def run_suite_bundles(
     if run_cfg.suite.seeds is None:
         run_cfg = run_cfg.model_copy(update={"suite": run_cfg.suite.model_copy(update={"seeds": seeds})})
         writer.write_json("run_config.json", run_cfg.model_dump())
+    compatibility_issues = collect_compatibility_issues(bundles, cfg.env_type)
+    if compatibility_issues:
+        sample = compatibility_issues[:5]
+        lines = "\n".join([f"- {i.task_id}: {i.reason}" for i in sample])
+        extra = ""
+        if len(compatibility_issues) > len(sample):
+            extra = f"\n... and {len(compatibility_issues) - len(sample)} more task(s)."
+        raise RuntimeError(
+            "Selected environment is incompatible with one or more task bundles:\n"
+            f"{lines}{extra}\n"
+            "Tip: use --env docker_cli/daytona for Dockerfile-based datasets."
+        )
     trials = _seed_trials(bundles, cfg.suite.trials_per_task, seeds)
     _emit_event(
         on_event,
@@ -639,7 +653,11 @@ async def run_suite_bundles(
     )
 
     sem = asyncio.Semaphore(cfg.suite.concurrency)
-    provider_limit = _min_provider_limit(bundles) if cfg.env_type == EnvironmentType.daytona else None
+    provider_limit = (
+        _min_provider_limit(bundles)
+        if cfg.env_type in (EnvironmentType.daytona, EnvironmentType.e2b)
+        else None
+    )
     provider_sem = asyncio.Semaphore(provider_limit) if provider_limit else None
     results: list[TrialResult] = []
 

@@ -171,6 +171,7 @@ def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
 
 _CLOUD_PROVIDER_API_KEYS = {
     EnvironmentType.daytona.value: ("DAYTONA_API_KEY", "Daytona API key"),
+    EnvironmentType.e2b.value: ("E2B_API_KEY", "E2B API key"),
 }
 
 
@@ -506,7 +507,7 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
+    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona, e2b)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),

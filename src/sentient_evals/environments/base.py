@@ -14,6 +14,7 @@ class EnvironmentType(str, Enum):
     docker_sdk = "docker_sdk"
     podman_cli = "podman_cli"
     daytona = "daytona"
+    e2b = "e2b"
 
 
 @dataclass(frozen=True)
