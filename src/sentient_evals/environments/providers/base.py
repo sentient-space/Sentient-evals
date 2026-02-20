@@ -32,6 +32,7 @@ class SandboxCreateParams:
     dockerfile: Path | None = None
     context_dir: Path | None = None
     resources: SandboxResources | None = None
+    provider_options: dict[str, Any] | None = None
     network_block_all: bool | None = None
     build_timeout_sec: float | None = None
     force_build: bool = False

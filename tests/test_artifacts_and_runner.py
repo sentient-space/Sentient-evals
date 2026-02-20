@@ -6,8 +6,10 @@ from sentient_evals.artifacts import ArtifactWriter, TrialArtifacts
 from sentient_evals.env import ExecResult, ToolExecutor
 from sentient_evals.graders import ExactMatchGrader
 from sentient_evals.atif.converters import transcript_to_trajectory
+from sentient_evals.environments.base import EnvironmentType
 from sentient_evals.models import GraderResult, Outcome, SuiteConfig, Task, TranscriptEvent
 from sentient_evals.runner import RunConfig, run_suite, run_suite_bundles
+import sentient_evals.runner as runner_module
 from sentient_evals.replay import RecordingToolExecutor, ReplayingToolExecutor
 from sentient_evals.task_bundles import load_task_bundles
 
@@ -235,3 +237,54 @@ def test_run_suite_bundles_local_python(tmp_path: Path):
     assert trial_cfg["provenance"]["env_type"] == "local_python"
     assert trial_cfg["provenance"]["task_bundle_digest"] == bundles[0].digest
 
+
+def test_run_suite_bundles_modal_uses_provider_limit(tmp_path: Path, monkeypatch):
+    task_dir = tmp_path / "tasks" / "t1"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text(
+        '\n'.join(
+            [
+                'id = "t1"',
+                "",
+                "[environment]",
+                'type = "local_python"',
+                "provider_concurrency = 1",
+                "",
+                "[input]",
+                'q = "?"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "instruction.md").write_text("do thing", encoding="utf-8")
+
+    bundles = load_task_bundles(task_dir.parent)
+    suite = SuiteConfig(id="s", trials_per_task=1, concurrency=1, seeds=[123])
+    cfg = RunConfig(
+        run_id="r_modal",
+        suite=suite,
+        jobs_dir=tmp_path,
+        adapter_name="fake",
+        env_type=EnvironmentType.modal,
+    )
+    (tmp_path / "r_modal").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "r_modal" / "cancel.json").write_text("{}", encoding="utf-8")
+
+    called = {"value": False}
+
+    def _fake_min_provider_limit(_bundles):
+        called["value"] = True
+        return 1
+
+    monkeypatch.setattr(runner_module, "_min_provider_limit", _fake_min_provider_limit)
+
+    asyncio.run(
+        run_suite_bundles(
+            bundles=bundles,
+            adapter=FakeAdapter(),
+            graders=[],
+            cfg=cfg,
+        )
+    )
+    assert called["value"] is True

@@ -15,6 +15,7 @@ class EnvironmentType(str, Enum):
     podman_cli = "podman_cli"
     daytona = "daytona"
     e2b = "e2b"
+    modal = "modal"
 
 
 @dataclass(frozen=True)

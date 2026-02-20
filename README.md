@@ -115,10 +115,12 @@ Supported `--env` values:
 - `podman_cli` (requires `podman` installed)
 - `daytona` (requires `sentient-evals[daytona]` and Daytona configured)
 - `e2b` (requires `sentient-evals[e2b]` and `E2B_API_KEY`)
+- `modal` (requires `sentient-evals[modal]`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET`)
 
 Notes:
 - Docker-based runs require Docker (or Podman) installed and running.
 - For parallel sandboxed evals, prefer `docker_cli` locally or Daytona/E2B in the cloud.
+- Modal is a strong cloud alternative when Daytona/E2B networking or runtime installation constraints block runs.
 - If Daytona access is blocked (for example, client-side IP restrictions), use `--env e2b` as a cloud fallback.
 - Cloud backends currently assume **single-container** tasks (multi-container orchestration is not yet supported).
 - You can throttle cloud provider concurrency per task bundle via `environment.provider_concurrency` in `task.toml`.
@@ -136,6 +138,20 @@ Example:
 
 ```bash
 sentient-evals run --tasks-dir path/to/tasks --env e2b --adapter cursor-cli --config eval.toml
+```
+
+Install Modal support:
+
+```bash
+pip install "sentient-evals[modal]"
+export MODAL_TOKEN_ID=your_token_id
+export MODAL_TOKEN_SECRET=your_token_secret
+```
+
+Example:
+
+```bash
+sentient-evals run --tasks-dir path/to/tasks --env modal --adapter cursor-cli --config eval.toml
 ```
 
 ## Output layout (local runs)

@@ -54,6 +54,10 @@ class RunConfig:
     docker_image_tag_prefix: str = "sentient-evals"
     daytona_snapshot_template: str | None = None
     daytona_network_block_all: bool | None = None
+    modal_app_name: str | None = None
+    modal_secrets: tuple[str, ...] = ()
+    modal_volumes: tuple[str, ...] = ()
+    modal_cidr_allowlist: tuple[str, ...] = ()
 
 
 def _wilson_ci95(passed: int, n: int) -> tuple[float, float]:
@@ -645,7 +649,7 @@ async def run_suite_bundles(
         raise RuntimeError(
             "Selected environment is incompatible with one or more task bundles:\n"
             f"{lines}{extra}\n"
-            "Tip: use --env docker_cli/daytona for Dockerfile-based datasets."
+            "Tip: use --env docker_cli/daytona/modal for Dockerfile-based datasets."
         )
     trials = _seed_trials(bundles, cfg.suite.trials_per_task, seeds)
     _emit_event(
@@ -660,7 +664,7 @@ async def run_suite_bundles(
     sem = asyncio.Semaphore(cfg.suite.concurrency)
     provider_limit = (
         _min_provider_limit(bundles)
-        if cfg.env_type in (EnvironmentType.daytona, EnvironmentType.e2b)
+        if cfg.env_type in (EnvironmentType.daytona, EnvironmentType.e2b, EnvironmentType.modal)
         else None
     )
     provider_sem = asyncio.Semaphore(provider_limit) if provider_limit else None
@@ -763,6 +767,10 @@ async def run_suite_bundles(
                     docker_image_tag_prefix=cfg.docker_image_tag_prefix,
                     daytona_snapshot_template=cfg.daytona_snapshot_template,
                     daytona_network_block_all=cfg.daytona_network_block_all,
+                    modal_app_name=cfg.modal_app_name,
+                    modal_secrets=cfg.modal_secrets,
+                    modal_volumes=cfg.modal_volumes,
+                    modal_cidr_allowlist=cfg.modal_cidr_allowlist,
                 )
 
                 recorder: RecordingToolExecutor | None = None

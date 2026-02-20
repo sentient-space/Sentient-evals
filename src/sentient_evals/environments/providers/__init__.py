@@ -6,6 +6,7 @@ from .base import (
 )
 from .daytona import DaytonaProvider
 from .e2b import E2BProvider
+from .modal import ModalProvider
 
 __all__ = [
     "CloudSandboxProvider",
@@ -14,4 +15,5 @@ __all__ = [
     "SandboxResources",
     "DaytonaProvider",
     "E2BProvider",
+    "ModalProvider",
 ]

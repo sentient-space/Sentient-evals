@@ -172,11 +172,15 @@ def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
 _CLOUD_PROVIDER_API_KEYS = {
     EnvironmentType.daytona.value: ("DAYTONA_API_KEY", "Daytona API key"),
     EnvironmentType.e2b.value: ("E2B_API_KEY", "E2B API key"),
+    EnvironmentType.modal.value: ("MODAL_TOKEN_ID", "Modal token ID"),
 }
 
 
 def _prompt_cloud_provider_api_key(env: str | None) -> None:
     if not env:
+        return
+    if env.lower() == EnvironmentType.modal.value:
+        _prompt_required(["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"])
         return
     spec = _CLOUD_PROVIDER_API_KEYS.get(env.lower())
     if spec:
@@ -507,7 +511,7 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona, e2b)"),
+    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, docker_sdk, podman_cli, daytona, e2b, modal)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),
@@ -515,6 +519,22 @@ def run(
         False,
         "--daytona-allow-network",
         help="Allow outbound network access in Daytona sandboxes (overrides block-all).",
+    ),
+    modal_app_name: Optional[str] = typer.Option(None, "--modal-app-name"),
+    modal_secret: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-secret",
+        help="Modal Secret name to expose in sandbox (repeatable).",
+    ),
+    modal_volume: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-volume",
+        help="Modal Volume mapping in mount_path=volume_name format (repeatable).",
+    ),
+    modal_cidr_allowlist: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-cidr-allowlist",
+        help="Allowed outbound CIDR for Modal sandbox networking (repeatable).",
     ),
     limit_tasks: Optional[int] = typer.Option(
         None,
@@ -667,6 +687,10 @@ def run(
         docker_image_tag_prefix=docker_image_tag_prefix,
         daytona_snapshot_template=daytona_snapshot_template,
         daytona_network_block_all=False if daytona_allow_network else daytona_network_block_all,
+        modal_app_name=modal_app_name,
+        modal_secrets=tuple(modal_secret or ()),
+        modal_volumes=tuple(modal_volume or ()),
+        modal_cidr_allowlist=tuple(modal_cidr_allowlist or ()),
     )
 
     status_ctx = (

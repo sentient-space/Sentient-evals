@@ -80,6 +80,7 @@ class E2BProvider(CloudSandboxProvider):
             if params.resources.cpus is not None:
                 create_kwargs["metadata"]["cpus"] = str(params.resources.cpus)
             if params.resources.memory_mb is not None:
+                create_kwargs["ram_mb"] = int(params.resources.memory_mb)
                 create_kwargs["metadata"]["memory_mb"] = str(params.resources.memory_mb)
             if params.resources.storage_mb is not None:
                 create_kwargs["metadata"]["storage_mb"] = str(params.resources.storage_mb)

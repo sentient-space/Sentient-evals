@@ -28,6 +28,9 @@ daytona = [
 e2b = [
   "e2b",
 ]
+modal = [
+  "modal>=1.3.0.post1",
+]
 langchain = [
   "langchain-core",
 ]

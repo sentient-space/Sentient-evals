@@ -13,6 +13,10 @@ class EnvironmentFactoryConfig:
     docker_image_tag_prefix: str = "sentient-evals"
     daytona_snapshot_template: str | None = None
     daytona_network_block_all: bool | None = None
+    modal_app_name: str | None = None
+    modal_secrets: tuple[str, ...] = ()
+    modal_volumes: tuple[str, ...] = ()
+    modal_cidr_allowlist: tuple[str, ...] = ()
     extra: dict[str, Any] | None = None
 
 
@@ -35,6 +39,10 @@ class EnvironmentFactory:
         docker_image_tag_prefix: str = "sentient-evals",
         daytona_snapshot_template: str | None = None,
         daytona_network_block_all: bool | None = None,
+        modal_app_name: str | None = None,
+        modal_secrets: tuple[str, ...] = (),
+        modal_volumes: tuple[str, ...] = (),
+        modal_cidr_allowlist: tuple[str, ...] = (),
     ) -> BaseEnvironment:
         if env_type == EnvironmentType.local_python:
             from .local_python import LocalPythonEnvironment
@@ -105,6 +113,22 @@ class EnvironmentFactory:
                 config=cfg,
                 environment_dir=task_environment_dir,
                 image=container_image,
+            )
+
+        if env_type == EnvironmentType.modal:
+            from .modal import ModalEnvironment
+
+            return ModalEnvironment(
+                trial_id=trial_id,
+                workspace_dir=workspace_dir,
+                logs_dir=logs_dir,
+                config=cfg,
+                environment_dir=task_environment_dir,
+                image=container_image,
+                app_name=modal_app_name,
+                secret_names=modal_secrets,
+                volume_specs=modal_volumes,
+                cidr_allowlist=modal_cidr_allowlist,
             )
 
         raise ValueError(f"Unsupported environment type: {env_type}")

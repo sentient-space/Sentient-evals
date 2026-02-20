@@ -44,6 +44,7 @@ _ENVIRONMENT_TYPES = [
     "podman_cli",
     "daytona",
     "e2b",
+    "modal",
 ]
 
 _DEFAULT_MODELS = {

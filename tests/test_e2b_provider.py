@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sentient_evals.environments.providers.base import SandboxCreateParams
+from sentient_evals.environments.providers.base import SandboxCreateParams, SandboxResources
 from sentient_evals.environments.providers.e2b import E2BProvider
 
 
@@ -94,7 +94,12 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
     monkeypatch.setenv("E2B_API_KEY", "Bearer   test-key-123  ")
     provider = E2BProvider()
     sandbox = await provider.create(
-        SandboxCreateParams(image="template-123", network_block_all=True, build_timeout_sec=90)
+        SandboxCreateParams(
+            image="template-123",
+            network_block_all=True,
+            build_timeout_sec=90,
+            resources=SandboxResources(memory_mb=4096),
+        )
     )
 
     assert isinstance(sandbox, _FakeSandbox)
@@ -103,6 +108,7 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
     assert _FakeSandboxClass.last_kwargs["allow_internet_access"] is False
     assert _FakeSandboxClass.last_kwargs["api_key"] == "test-key-123"
     assert _FakeSandboxClass.last_kwargs["timeout"] == 3_600
+    assert _FakeSandboxClass.last_kwargs["ram_mb"] == 4096
 
     result = await provider.exec(sandbox, "echo hello", cwd="/workspace", timeout_s=5)
     assert result.exit_code == 0
