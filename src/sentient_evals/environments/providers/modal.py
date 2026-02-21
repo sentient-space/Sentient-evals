@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shlex
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sentient_evals.env import ExecResult
 
@@ -58,6 +61,7 @@ class ModalProvider(CloudSandboxProvider):
             "app": app,
             "image": image,
             "timeout": max(1, timeout),
+            "verbose": True, 
         }
 
         if params.resources is not None:
@@ -107,8 +111,16 @@ class ModalProvider(CloudSandboxProvider):
             wrapped,
             timeout=int(timeout_s) if timeout_s is not None else None,
         )
-        stdout = await self._read_stream(getattr(process, "stdout", ""))
-        stderr = await self._read_stream(getattr(process, "stderr", ""))
+
+       
+        stdout_task = asyncio.create_task(
+            self._read_stream_live(getattr(process, "stdout", ""), "stdout")
+        )
+        stderr_task = asyncio.create_task(
+            self._read_stream_live(getattr(process, "stderr", ""), "stderr")
+        )
+        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+
         exit_code = await self._wait_process(process)
         dur_ms = int((time.monotonic() - started) * 1000)
         return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code, duration_ms=dur_ms)
@@ -261,6 +273,25 @@ class ModalProvider(CloudSandboxProvider):
             return await self._call_modal(read, size)
         except TypeError:
             return await self._call_modal(read)
+
+    async def _read_stream_live(self, stream: Any, label: str = "output") -> str:
+        
+        if stream is None:
+            return ""
+
+        
+        if hasattr(stream, "__aiter__"):
+            chunks: list[str] = []
+            async for chunk in stream:
+                text = _to_text(chunk)
+                chunks.append(text)
+                for line in text.splitlines():
+                    if line.strip():
+                        logger.info("[modal %s] %s", label, line)
+            return "".join(chunks)
+
+ 
+        return await self._read_stream(stream)
 
     async def _read_stream(self, stream: Any) -> str:
         if stream is None:

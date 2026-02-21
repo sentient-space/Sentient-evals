@@ -58,6 +58,7 @@ class RunConfig:
     modal_secrets: tuple[str, ...] = ()
     modal_volumes: tuple[str, ...] = ()
     modal_cidr_allowlist: tuple[str, ...] = ()
+    modal_allow_network: bool = False
 
 
 def _wilson_ci95(passed: int, n: int) -> tuple[float, float]:
@@ -771,6 +772,7 @@ async def run_suite_bundles(
                     modal_secrets=cfg.modal_secrets,
                     modal_volumes=cfg.modal_volumes,
                     modal_cidr_allowlist=cfg.modal_cidr_allowlist,
+                    modal_allow_network=cfg.modal_allow_network,
                 )
 
                 recorder: RecordingToolExecutor | None = None

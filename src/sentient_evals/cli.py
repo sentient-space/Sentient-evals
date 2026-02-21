@@ -536,6 +536,11 @@ def run(
         "--modal-cidr-allowlist",
         help="Allowed outbound CIDR for Modal sandbox networking (repeatable).",
     ),
+    modal_allow_network: bool = typer.Option(
+        False,
+        "--modal-allow-network",
+        help="Allow outbound network access in Modal sandboxes (overrides task config).",
+    ),
     limit_tasks: Optional[int] = typer.Option(
         None,
         "--limit-tasks",
@@ -691,6 +696,7 @@ def run(
         modal_secrets=tuple(modal_secret or ()),
         modal_volumes=tuple(modal_volume or ()),
         modal_cidr_allowlist=tuple(modal_cidr_allowlist or ()),
+        modal_allow_network=modal_allow_network,
     )
 
     status_ctx = (

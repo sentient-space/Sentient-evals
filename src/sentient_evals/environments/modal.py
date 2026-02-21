@@ -43,6 +43,7 @@ class ModalEnvironment(CloudSandboxEnvironment):
         secret_names: tuple[str, ...] = (),
         volume_specs: tuple[str, ...] = (),
         cidr_allowlist: tuple[str, ...] = (),
+        allow_network_override: bool = False,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -56,6 +57,11 @@ class ModalEnvironment(CloudSandboxEnvironment):
             storage_mb=config.storage_mb,
             gpus=config.gpus,
         )
+
+        block_network = not config.allow_internet
+        if allow_network_override:
+            block_network = False
+
         params = SandboxCreateParams(
             image=image,
             snapshot=None,
@@ -68,7 +74,7 @@ class ModalEnvironment(CloudSandboxEnvironment):
                 "volumes": _parse_modal_volume_specs(tuple(volume_specs)),
                 "cidr_allowlist": tuple(cidr_allowlist),
             },
-            network_block_all=not config.allow_internet,
+            network_block_all=block_network,
             build_timeout_sec=config.build_timeout_sec,
         )
         settings = CloudSandboxSettings(

@@ -17,6 +17,7 @@ class EnvironmentFactoryConfig:
     modal_secrets: tuple[str, ...] = ()
     modal_volumes: tuple[str, ...] = ()
     modal_cidr_allowlist: tuple[str, ...] = ()
+    modal_allow_network: bool = False
     extra: dict[str, Any] | None = None
 
 
@@ -43,6 +44,7 @@ class EnvironmentFactory:
         modal_secrets: tuple[str, ...] = (),
         modal_volumes: tuple[str, ...] = (),
         modal_cidr_allowlist: tuple[str, ...] = (),
+        modal_allow_network: bool = False,
     ) -> BaseEnvironment:
         if env_type == EnvironmentType.local_python:
             from .local_python import LocalPythonEnvironment
@@ -129,6 +131,7 @@ class EnvironmentFactory:
                 secret_names=modal_secrets,
                 volume_specs=modal_volumes,
                 cidr_allowlist=modal_cidr_allowlist,
+                allow_network_override=modal_allow_network,
             )
 
         raise ValueError(f"Unsupported environment type: {env_type}")
