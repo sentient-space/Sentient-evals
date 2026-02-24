@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shlex
 from pathlib import Path
@@ -9,6 +10,18 @@ from typing import Any
 from sentient_evals.env import ExecResult
 
 from .base import CloudSandboxProvider, SandboxCapabilities, SandboxCreateParams
+
+try:
+    from e2b import AsyncTemplate as _E2BAsyncTemplate
+    from e2b import Sandbox as _E2BSandbox
+    from e2b import Template as _E2BTemplate
+except ImportError:
+    _E2BAsyncTemplate = None
+    _E2BTemplate = None
+    try:
+        from e2b_code_interpreter import Sandbox as _E2BSandbox
+    except ImportError:
+        _E2BSandbox = None
 
 
 def _normalize_text(value: Any) -> str:
@@ -41,6 +54,42 @@ def _normalize_api_key(raw: str | None) -> str | None:
     return value or None
 
 
+def _looks_like_template_id(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    if "/" in candidate or ":" in candidate or "@" in candidate:
+        return False
+    return True
+
+
+def _hash_path_tree(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(rel)
+        digest.update(b"\0")
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _strip_dockerfile_comments(dockerfile: Path) -> str:
+    try:
+        raw = dockerfile.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raw = dockerfile.read_text(encoding="utf-8", errors="replace")
+    kept_lines = [line for line in raw.splitlines() if not line.lstrip().startswith("#")]
+    content = "\n".join(kept_lines).strip()
+    return f"{content}\n" if content else ""
+
+
 class E2BProvider(CloudSandboxProvider):
     name = "e2b"
     _preferred_user = "root"
@@ -56,12 +105,11 @@ class E2BProvider(CloudSandboxProvider):
 
     async def create(self, params: SandboxCreateParams) -> Any:
         Sandbox = self._sandbox_cls()
-        template = params.snapshot or params.image
+        template = await self._resolve_template(params)
         timeout = self._default_sandbox_timeout_sec
         allow_internet = not bool(params.network_block_all)
         api_key = _normalize_api_key(os.environ.get("E2B_API_KEY"))
         if api_key:
-            # Keep env clean for SDK internals that may read directly from os.environ.
             os.environ["E2B_API_KEY"] = api_key
 
         create_kwargs: dict[str, Any] = {
@@ -71,10 +119,7 @@ class E2BProvider(CloudSandboxProvider):
         }
         if api_key:
             create_kwargs["api_key"] = api_key
-        create_kwargs["template"] = template or "base"
-
-        if params.dockerfile is not None and template is None:
-            create_kwargs["metadata"]["dockerfile_ignored"] = str(params.dockerfile)
+        create_kwargs["template"] = template
 
         if params.resources is not None:
             if params.resources.cpus is not None:
@@ -196,13 +241,115 @@ class E2BProvider(CloudSandboxProvider):
             return await value
         return value
 
+    async def _resolve_template(self, params: SandboxCreateParams) -> str:
+        if params.snapshot:
+            return params.snapshot
+
+        image = (params.image or "").strip() or None
+        if image and _looks_like_template_id(image):
+            return image
+
+        should_build = bool(image) or params.dockerfile is not None
+        if not should_build:
+            return "base"
+
+        return await self._build_or_reuse_template(params, source_image=image)
+
+    async def _build_or_reuse_template(
+        self,
+        params: SandboxCreateParams,
+        *,
+        source_image: str | None,
+    ) -> str:
+        template_cls, async_template_cls = self._template_classes()
+        if template_cls is None or async_template_cls is None:
+            raise RuntimeError(
+                "E2B template build requires the e2b SDK Template APIs. "
+                "Install/update `e2b` and provide a valid template id in [environment].image as fallback."
+            )
+
+        alias = self._template_alias(params, source_image=source_image)
+        exists = await self._template_alias_exists(async_template_cls, alias)
+        if params.force_build or not exists:
+            template = self._create_template_definition(
+                template_cls,
+                source_image=source_image,
+                dockerfile=params.dockerfile,
+            )
+            build_kwargs: dict[str, Any] = {
+                "template": template,
+                "alias": alias,
+            }
+            if params.resources is not None:
+                if params.resources.cpus is not None:
+                    build_kwargs["cpu_count"] = params.resources.cpus
+                if params.resources.memory_mb is not None:
+                    build_kwargs["memory_mb"] = int(params.resources.memory_mb)
+            await self._invoke(async_template_cls.build, **build_kwargs)
+        return alias
+
+    def _template_alias(self, params: SandboxCreateParams, *, source_image: str | None) -> str:
+        if source_image:
+            digest = hashlib.sha256(f"image:{source_image}".encode("utf-8")).hexdigest()
+        elif params.context_dir and params.context_dir.exists():
+            digest = _hash_path_tree(params.context_dir)
+        elif params.dockerfile and params.dockerfile.exists():
+            digest = hashlib.sha256(params.dockerfile.read_bytes()).hexdigest()
+        else:
+            digest = hashlib.sha256(b"base").hexdigest()
+        return f"sentient-e2b-{digest[:16]}"
+
+    def _create_template_definition(
+        self,
+        template_cls: Any,
+        *,
+        source_image: str | None,
+        dockerfile: Path | None,
+    ) -> Any:
+        template = template_cls()
+        if source_image:
+            from_image = getattr(template, "from_image", None)
+            if not callable(from_image):
+                raise RuntimeError("E2B Template API does not expose from_image()")
+            return from_image(image=source_image)
+        if dockerfile is None:
+            raise RuntimeError("E2B template build requires source image or dockerfile")
+        from_dockerfile = getattr(template, "from_dockerfile", None)
+        if not callable(from_dockerfile):
+            raise RuntimeError("E2B Template API does not expose from_dockerfile()")
+        sanitized_content = _strip_dockerfile_comments(dockerfile)
+        if sanitized_content:
+            try:
+                return from_dockerfile(dockerfile_content_or_path=sanitized_content)
+            except TypeError:
+                pass
+            except (FileNotFoundError, OSError):
+                pass
+        try:
+            return from_dockerfile(dockerfile_content_or_path=str(dockerfile))
+        except TypeError:
+            return from_dockerfile(str(dockerfile))
+
+    async def _template_alias_exists(self, async_template_cls: Any, alias: str) -> bool:
+        alias_exists = getattr(async_template_cls, "alias_exists", None)
+        if not callable(alias_exists):
+            return False
+        try:
+            return bool(await self._invoke(alias_exists, alias))
+        except Exception:
+            return False
+
     @staticmethod
     def _sandbox_cls():
-        try:
-            from e2b import Sandbox  # type: ignore
-        except Exception:
-            from e2b_code_interpreter import Sandbox  # type: ignore
-        return Sandbox
+        if _E2BSandbox is None:
+            raise RuntimeError(
+                "E2B SDK is not installed. Install `e2b` (preferred) or `e2b-code-interpreter`."
+            )
+        return _E2BSandbox
+
+    @staticmethod
+    def _template_classes() -> tuple[Any | None, Any | None]:
+        return _E2BTemplate, _E2BAsyncTemplate
 
     @staticmethod
     def _files_api(sandbox: Any) -> Any:

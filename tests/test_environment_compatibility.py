@@ -32,13 +32,11 @@ def _write_task(root: Path, *, image: str | None = None, docker_from: str = "pyt
     return task_dir
 
 
-def test_e2b_incompatible_with_dockerfile_without_template_id(tmp_path: Path):
+def test_e2b_accepts_dockerfile_without_explicit_template_id(tmp_path: Path):
     task_dir = _write_task(tmp_path, image=None, docker_from="swebench/sweb.eval.x86_64.astropy_1776_astropy-12907:latest")
     bundle = load_task_bundle(task_dir)
     issues = collect_compatibility_issues([bundle], EnvironmentType.e2b)
-    assert len(issues) == 1
-    assert "Dockerfile image build/runtime" in issues[0].reason
-    assert "swebench/sweb.eval.x86_64.astropy_1776_astropy-12907:latest" in issues[0].reason
+    assert issues == []
 
 
 def test_e2b_accepts_template_id_in_environment_image(tmp_path: Path):
@@ -48,9 +46,18 @@ def test_e2b_accepts_template_id_in_environment_image(tmp_path: Path):
     assert issues == []
 
 
-def test_e2b_rejects_docker_image_reference_in_environment_image(tmp_path: Path):
+def test_e2b_accepts_docker_image_reference_in_environment_image(tmp_path: Path):
     task_dir = _write_task(tmp_path, image="swebench/sweb.eval.x86_64.astropy_1776_astropy-12907:latest")
     bundle = load_task_bundle(task_dir)
     issues = collect_compatibility_issues([bundle], EnvironmentType.e2b)
+    assert issues == []
+
+
+def test_e2b_incompatible_when_no_image_and_no_dockerfile(tmp_path: Path):
+    task_dir = _write_task(tmp_path, image=None)
+    dockerfile = task_dir / "environment" / "Dockerfile"
+    dockerfile.unlink()
+    bundle = load_task_bundle(task_dir)
+    issues = collect_compatibility_issues([bundle], EnvironmentType.e2b)
     assert len(issues) == 1
-    assert "not an E2B template id" in issues[0].reason
+    assert "no Dockerfile and no [environment].image" in issues[0].reason

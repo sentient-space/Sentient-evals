@@ -255,6 +255,21 @@ def _load_trial_results(trials_dir: Path) -> list[TrialResult]:
     return out
 
 
+def _compact_failure_reason(reason: object, *, max_chars: int = 220) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "failed"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "failed"
+    compact = lines[0]
+    if len(lines) > 1:
+        compact = f"{compact} (+{len(lines) - 1} lines)"
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 1].rstrip() + "..."
+    return compact
+
+
 def _render_run_dashboard(
     *,
     run_result: dict,
@@ -339,7 +354,7 @@ def _render_run_dashboard(
                         reason = f"{failing.name}: failed"
                 else:
                     reason = "failed"
-            ftable.add_row(r.trial_id, reason)
+            ftable.add_row(r.trial_id, _compact_failure_reason(reason))
         console.print(ftable)
         if len(failures) > max_failures:
             console.print(f"[dim]... and {len(failures) - max_failures} more failures[/dim]")

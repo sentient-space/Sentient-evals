@@ -88,6 +88,41 @@ class _FakeSandboxClass:
         return _FakeSandbox()
 
 
+class _FakeTemplateBuilder:
+    def __init__(self) -> None:
+        self.definition: tuple[str, str] | None = None
+
+    def from_image(self, *, image: str):
+        self.definition = ("image", image)
+        return {"kind": "image", "image": image}
+
+    def from_dockerfile(self, dockerfile_content_or_path: str):
+        self.definition = ("dockerfile", dockerfile_content_or_path)
+        return {"kind": "dockerfile", "path": dockerfile_content_or_path}
+
+
+class _FakeAsyncTemplate:
+    aliases: set[str] = set()
+    build_calls: list[dict[str, object]] = []
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.aliases = set()
+        cls.build_calls = []
+
+    @classmethod
+    def alias_exists(cls, alias: str) -> bool:
+        return alias in cls.aliases
+
+    @classmethod
+    def build(cls, **kwargs):
+        cls.build_calls.append(kwargs)
+        alias = kwargs.get("alias")
+        if isinstance(alias, str):
+            cls.aliases.add(alias)
+        return {"ok": True}
+
+
 @pytest.mark.asyncio
 async def test_e2b_provider_create_and_exec(monkeypatch):
     monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
@@ -159,3 +194,95 @@ async def test_e2b_provider_stop_and_delete(monkeypatch):
 
     await provider.delete(sandbox)
     assert sandbox.killed is True
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_builds_template_from_docker_image(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    provider = E2BProvider()
+    sandbox = await provider.create(SandboxCreateParams(image="python:3.11-slim"))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    alias = _FakeSandboxClass.last_kwargs["template"]
+    assert isinstance(alias, str)
+    assert alias.startswith("sentient-e2b-")
+    assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "image"
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_builds_template_from_dockerfile(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM python:3.11-slim\nWORKDIR /workspace\n", encoding="utf-8")
+    provider = E2BProvider()
+    sandbox = await provider.create(SandboxCreateParams(dockerfile=dockerfile, context_dir=tmp_path))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    alias = _FakeSandboxClass.last_kwargs["template"]
+    assert isinstance(alias, str)
+    assert alias.startswith("sentient-e2b-")
+    assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "dockerfile"
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_strips_dockerfile_comments_for_template_build(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# comment one\nFROM python:3.11-slim\n# comment two\nWORKDIR /workspace\n",
+        encoding="utf-8",
+    )
+    provider = E2BProvider()
+    sandbox = await provider.create(SandboxCreateParams(dockerfile=dockerfile, context_dir=tmp_path))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeAsyncTemplate.build_calls
+    template = _FakeAsyncTemplate.build_calls[0]["template"]
+    assert template["kind"] == "dockerfile"
+    assert "# comment one" not in template["path"]
+    assert "# comment two" not in template["path"]
+    assert "FROM python:3.11-slim" in template["path"]
+    assert "WORKDIR /workspace" in template["path"]
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_reuses_existing_template_alias(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    existing_alias = "sentient-e2b-1234567890abcdef"
+    _FakeAsyncTemplate.aliases.add(existing_alias)
+    provider = E2BProvider()
+    monkeypatch.setattr(provider, "_template_alias", lambda params, source_image: existing_alias)
+    sandbox = await provider.create(SandboxCreateParams(image="python:3.11-slim"))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    assert _FakeSandboxClass.last_kwargs["template"] == existing_alias
+    assert _FakeAsyncTemplate.build_calls == []
