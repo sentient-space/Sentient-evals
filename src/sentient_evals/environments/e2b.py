@@ -5,6 +5,7 @@ from pathlib import Path
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
 from .providers import E2BProvider, SandboxCreateParams, SandboxResources
+from .workdir import resolve_workdir
 
 
 class E2BEnvironment(CloudSandboxEnvironment):
@@ -17,6 +18,7 @@ class E2BEnvironment(CloudSandboxEnvironment):
         config: EnvironmentConfig,
         environment_dir: Path | None,
         image: str | None,
+        workdir: str | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -39,10 +41,15 @@ class E2BEnvironment(CloudSandboxEnvironment):
             network_block_all=not config.allow_internet,
             build_timeout_sec=config.build_timeout_sec,
         )
+        effective_workdir = resolve_workdir(
+            environment_dir,
+            override=workdir,
+            default="/workspace",
+        )
         settings = CloudSandboxSettings(
-            remote_workspace="/workspace",
+            remote_workspace=effective_workdir,
             remote_logs="/logs",
-            default_cwd="/workspace",
+            default_cwd=effective_workdir,
         )
         super().__init__(
             trial_id=trial_id,

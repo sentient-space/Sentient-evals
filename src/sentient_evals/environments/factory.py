@@ -103,6 +103,7 @@ class EnvironmentFactory:
                 image=container_image,
                 snapshot_template_name=daytona_snapshot_template,
                 network_block_all=daytona_network_block_all,
+                workdir=container_workdir,
             )
 
         if env_type == EnvironmentType.e2b:
@@ -115,6 +116,7 @@ class EnvironmentFactory:
                 config=cfg,
                 environment_dir=task_environment_dir,
                 image=container_image,
+                workdir=container_workdir,
             )
 
         if env_type == EnvironmentType.modal:
@@ -132,6 +134,7 @@ class EnvironmentFactory:
                 volume_specs=modal_volumes,
                 cidr_allowlist=modal_cidr_allowlist,
                 allow_network_override=modal_allow_network,
+                workdir=container_workdir,
             )
 
         raise ValueError(f"Unsupported environment type: {env_type}")

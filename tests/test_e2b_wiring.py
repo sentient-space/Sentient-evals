@@ -34,3 +34,42 @@ def test_factory_creates_e2b_environment(tmp_path: Path):
     settings = getattr(env, "_settings")
     assert settings.remote_workspace == "/workspace"
     assert settings.remote_logs == "/logs"
+
+
+def test_factory_creates_e2b_environment_with_testbed_workdir(tmp_path: Path):
+    env_dir = tmp_path / "task_environment"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "Dockerfile").write_text("FROM python:3.11-slim\nWORKDIR /testbed\n", encoding="utf-8")
+
+    env = EnvironmentFactory.create(
+        env_type=EnvironmentType.e2b,
+        trial_id="trial-1",
+        workspace_dir=tmp_path / "workspace",
+        logs_dir=tmp_path / "logs",
+        cfg=EnvironmentConfig(),
+        task_environment_dir=env_dir,
+        container_image=None,
+    )
+    settings = getattr(env, "_settings")
+    assert settings.remote_workspace == "/testbed"
+    assert settings.default_cwd == "/testbed"
+
+
+def test_factory_creates_e2b_environment_respects_workdir_override(tmp_path: Path):
+    env_dir = tmp_path / "task_environment"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "Dockerfile").write_text("FROM python:3.11-slim\nWORKDIR /testbed\n", encoding="utf-8")
+
+    env = EnvironmentFactory.create(
+        env_type=EnvironmentType.e2b,
+        trial_id="trial-1",
+        workspace_dir=tmp_path / "workspace",
+        logs_dir=tmp_path / "logs",
+        cfg=EnvironmentConfig(),
+        task_environment_dir=env_dir,
+        container_image=None,
+        container_workdir="/app",
+    )
+    settings = getattr(env, "_settings")
+    assert settings.remote_workspace == "/app"
+    assert settings.default_cwd == "/app"

@@ -5,6 +5,7 @@ from pathlib import Path
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
 from .providers import DaytonaProvider, SandboxCreateParams, SandboxResources
+from .workdir import resolve_workdir
 
 
 class DaytonaEnvironment(CloudSandboxEnvironment):
@@ -20,6 +21,7 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
         image: str | None,
         snapshot_template_name: str | None = None,
         network_block_all: bool | None = None,
+        workdir: str | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -49,11 +51,16 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
             network_block_all=network_block_all,
             build_timeout_sec=config.build_timeout_sec,
         )
+        effective_workdir = resolve_workdir(
+            environment_dir,
+            override=workdir,
+            default="/workspace",
+        )
 
         settings = CloudSandboxSettings(
-            remote_workspace="/workspace",
+            remote_workspace=effective_workdir,
             remote_logs="/logs",
-            default_cwd="/workspace",
+            default_cwd=effective_workdir,
         )
 
         super().__init__(

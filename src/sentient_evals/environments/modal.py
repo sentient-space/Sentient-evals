@@ -5,6 +5,7 @@ from pathlib import Path
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
 from .providers import ModalProvider, SandboxCreateParams, SandboxResources
+from .workdir import resolve_workdir
 
 
 def _parse_modal_volume_specs(specs: tuple[str, ...]) -> dict[str, str]:
@@ -44,6 +45,7 @@ class ModalEnvironment(CloudSandboxEnvironment):
         volume_specs: tuple[str, ...] = (),
         cidr_allowlist: tuple[str, ...] = (),
         allow_network_override: bool = False,
+        workdir: str | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -77,10 +79,15 @@ class ModalEnvironment(CloudSandboxEnvironment):
             network_block_all=block_network,
             build_timeout_sec=config.build_timeout_sec,
         )
+        effective_workdir = resolve_workdir(
+            environment_dir,
+            override=workdir,
+            default="/workspace",
+        )
         settings = CloudSandboxSettings(
-            remote_workspace="/workspace",
+            remote_workspace=effective_workdir,
             remote_logs="/logs",
-            default_cwd="/workspace",
+            default_cwd=effective_workdir,
         )
         super().__init__(
             trial_id=trial_id,
