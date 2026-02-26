@@ -151,6 +151,24 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_e2b_provider_exec_coerces_nonzero_command_exception(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    provider = E2BProvider()
+    sandbox = _FakeSandbox()
+
+    class _CommandFailed(RuntimeError):
+        pass
+
+    def _raise_nonzero(*args, **kwargs):
+        raise _CommandFailed("Command exited with code 1 and error:\n+ pytest -q\nFAILED")
+
+    sandbox.commands.run = _raise_nonzero
+    result = await provider.exec(sandbox, "pytest -q", cwd="/workspace", timeout_s=30)
+    assert result.exit_code == 1
+    assert "FAILED" in result.stderr
+
+
+@pytest.mark.asyncio
 async def test_e2b_provider_uses_explicit_base_template(monkeypatch):
     monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
     monkeypatch.delenv("E2B_API_KEY", raising=False)

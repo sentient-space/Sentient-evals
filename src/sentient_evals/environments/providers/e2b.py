@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -169,17 +170,47 @@ class E2BProvider(CloudSandboxProvider):
     ) -> ExecResult:
         loop = asyncio.get_running_loop()
         started = loop.time()
-        result = await self._run_command(sandbox, command, cwd=cwd, env=env, timeout_s=timeout_s)
+        try:
+            result = await self._run_command(sandbox, command, cwd=cwd, env=env, timeout_s=timeout_s)
+            stdout = _normalize_text(getattr(result, "stdout", None))
+            stderr = _normalize_text(getattr(result, "stderr", None))
+            exit_code = _to_int(
+                getattr(result, "exit_code", None)
+                if getattr(result, "exit_code", None) is not None
+                else getattr(result, "return_code", None),
+                default=0,
+            )
+        except Exception as exc:
+            coerced = self._coerce_nonzero_exec_exception(exc)
+            if coerced is None:
+                raise
+            stdout, stderr, exit_code = coerced
         dur_ms = int((loop.time() - started) * 1000)
-        stdout = _normalize_text(getattr(result, "stdout", None))
-        stderr = _normalize_text(getattr(result, "stderr", None))
-        exit_code = _to_int(
-            getattr(result, "exit_code", None)
-            if getattr(result, "exit_code", None) is not None
-            else getattr(result, "return_code", None),
-            default=0,
-        )
         return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code, duration_ms=dur_ms)
+
+    @staticmethod
+    def _coerce_nonzero_exec_exception(exc: Exception) -> tuple[str, str, int] | None:
+        raw = str(exc)
+        message = raw.strip()
+
+        code = _to_int(getattr(exc, "exit_code", None), default=-1)
+        stdout = _normalize_text(getattr(exc, "stdout", ""))
+        stderr = _normalize_text(getattr(exc, "stderr", ""))
+        if code >= 0:
+            if not stderr:
+                stderr = message
+            return stdout, stderr, code
+
+        match = re.search(r"Command exited with code\s+(-?\d+)(?:\s+and error:\n(?P<err>.*))?$", message, re.S)
+        if not match:
+            return None
+
+        parsed_code = _to_int(match.group(1), default=-1)
+        if parsed_code < 0:
+            return None
+
+        parsed_err = (match.group("err") or "").strip()
+        return "", parsed_err or message, parsed_code
 
     async def upload_file(self, sandbox: Any, source_path: Path, target_path: str) -> None:
         files = self._files_api(sandbox)
