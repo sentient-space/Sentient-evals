@@ -29,7 +29,14 @@ from .task_bundles import load_task_bundles
 from .registry import build_adapter, build_grader
 from .datasets import DatasetClient, RegistryClientFactory
 from .datasets.registry.base import BaseRegistryClient
-from .prompts import select_adapter, select_dataset, select_environment, prompt_model_name, prompt_github_token
+from .prompts import (
+    select_adapter,
+    select_dataset,
+    select_environment,
+    prompt_model_name,
+    prompt_github_token,
+    prompt_concurrency,
+)
 from .config import (
     get_github_token,
     get_saved_github_token,
@@ -162,6 +169,24 @@ def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
             _prompt_any_of(any_of, label=f"{provider} API key")
 
 
+_CLOUD_PROVIDER_API_KEYS = {
+    EnvironmentType.daytona.value: ("DAYTONA_API_KEY", "Daytona API key"),
+    EnvironmentType.e2b.value: ("E2B_API_KEY", "E2B API key"),
+    EnvironmentType.modal.value: ("MODAL_TOKEN_ID", "Modal token ID"),
+}
+
+
+def _prompt_cloud_provider_api_key(env: str | None) -> None:
+    if not env:
+        return
+    if env.lower() == EnvironmentType.modal.value:
+        _prompt_required(["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"])
+        return
+    spec = _CLOUD_PROVIDER_API_KEYS.get(env.lower())
+    if spec:
+        _prompt_secret_env(spec[0], label=spec[1])
+
+
 def _format_run_event(name: str, payload: dict[str, object]) -> str | None:
     trial_id = payload.get("trial_id")
     prefix = f"{trial_id}: " if trial_id else ""
@@ -213,6 +238,13 @@ def _format_number(value: object, *, digits: int = 2) -> str:
     return str(value)
 
 
+def _cli_flag_present(flag: str) -> bool:
+    for arg in sys.argv[1:]:
+        if arg == flag or arg.startswith(f"{flag}="):
+            return True
+    return False
+
+
 def _load_trial_results(trials_dir: Path) -> list[TrialResult]:
     if not trials_dir.exists():
         return []
@@ -221,6 +253,21 @@ def _load_trial_results(trials_dir: Path) -> list[TrialResult]:
     for result_path in result_paths:
         out.append(TrialResult.model_validate_json(result_path.read_text()))
     return out
+
+
+def _compact_failure_reason(reason: object, *, max_chars: int = 220) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "failed"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "failed"
+    compact = lines[0]
+    if len(lines) > 1:
+        compact = f"{compact} (+{len(lines) - 1} lines)"
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 1].rstrip() + "..."
+    return compact
 
 
 def _render_run_dashboard(
@@ -307,7 +354,7 @@ def _render_run_dashboard(
                         reason = f"{failing.name}: failed"
                 else:
                     reason = "failed"
-            ftable.add_row(r.trial_id, reason)
+            ftable.add_row(r.trial_id, _compact_failure_reason(reason))
         console.print(ftable)
         if len(failures) > max_failures:
             console.print(f"[dim]... and {len(failures) - max_failures} more failures[/dim]")
@@ -479,10 +526,41 @@ def run(
     seed: Optional[int] = typer.Option(None, "--seed"),
     resume: bool = typer.Option(False, "--resume"),
     replay_mode: str = typer.Option("off", "--replay-mode", case_sensitive=False),
-    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, podman_cli, daytona)"),
+    env: Optional[str] = typer.Option(None, "--env", "-e", case_sensitive=False, help="Environment type (docker_cli, local_python, docker_sdk, podman_cli, daytona, e2b, modal)"),
     docker_image_tag_prefix: str = typer.Option("sentient-evals", "--docker-image-tag-prefix"),
     daytona_snapshot_template: Optional[str] = typer.Option(None, "--daytona-snapshot-template"),
     daytona_network_block_all: Optional[bool] = typer.Option(None, "--daytona-network-block-all"),
+    daytona_allow_network: bool = typer.Option(
+        False,
+        "--daytona-allow-network",
+        help="Allow outbound network access in Daytona sandboxes (overrides block-all).",
+    ),
+    modal_app_name: Optional[str] = typer.Option(None, "--modal-app-name"),
+    modal_secret: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-secret",
+        help="Modal Secret name to expose in sandbox (repeatable).",
+    ),
+    modal_volume: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-volume",
+        help="Modal Volume mapping in mount_path=volume_name format (repeatable).",
+    ),
+    modal_cidr_allowlist: Optional[list[str]] = typer.Option(
+        None,
+        "--modal-cidr-allowlist",
+        help="Allowed outbound CIDR for Modal sandbox networking (repeatable).",
+    ),
+    modal_allow_network: bool = typer.Option(
+        False,
+        "--modal-allow-network",
+        help="Allow outbound network access in Modal sandboxes (overrides task config).",
+    ),
+    limit_tasks: Optional[int] = typer.Option(
+        None,
+        "--limit-tasks",
+        help="Limit the number of tasks to run (first N in the selected source).",
+    ),
 ):
     """
     Run an eval suite from tasks JSON, task bundles directory, or registry dataset.
@@ -502,6 +580,7 @@ def run(
         env = select_environment()
         if env is None:
             raise typer.Abort()
+    _prompt_cloud_provider_api_key(env)
 
     registry_client = None
     if tasks_path is None and tasks_dir is None:
@@ -539,6 +618,11 @@ def run(
 
     spec = load_run_spec(config) if config is not None else None
     suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
+    concurrency_provided = _cli_flag_present("--concurrency")
+    if not concurrency_provided and sys.stdin.isatty():
+        concurrency = prompt_concurrency(suite.concurrency)
+    elif not concurrency_provided:
+        concurrency = suite.concurrency
     suite = suite.model_copy(
         update={
             "id": suite_id,
@@ -587,6 +671,10 @@ def run(
         bundles = load_task_bundles(effective_dir)
         if not bundles:
             raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
+        if limit_tasks is not None:
+            if limit_tasks < 1:
+                raise typer.BadParameter("--limit-tasks must be >= 1")
+            bundles = bundles[:limit_tasks]
         missing_tests = [
             b.task.id
             for b in bundles
@@ -618,7 +706,12 @@ def run(
         env_type=env_type,
         docker_image_tag_prefix=docker_image_tag_prefix,
         daytona_snapshot_template=daytona_snapshot_template,
-        daytona_network_block_all=daytona_network_block_all,
+        daytona_network_block_all=False if daytona_allow_network else daytona_network_block_all,
+        modal_app_name=modal_app_name,
+        modal_secrets=tuple(modal_secret or ()),
+        modal_volumes=tuple(modal_volume or ()),
+        modal_cidr_allowlist=tuple(modal_cidr_allowlist or ()),
+        modal_allow_network=modal_allow_network,
     )
 
     status_ctx = (
@@ -633,6 +726,12 @@ def run(
                 assert effective_dir is not None
                 if bundles is None:
                     bundles = load_task_bundles(effective_dir)
+                if not bundles:
+                    raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
+                if limit_tasks is not None:
+                    if limit_tasks < 1:
+                        raise typer.BadParameter("--limit-tasks must be >= 1")
+                    bundles = bundles[:limit_tasks]
                 results, summary = asyncio.run(
                     run_suite_bundles(
                         bundles=bundles, adapter=adapter_obj, graders=graders, cfg=cfg, on_event=on_event
@@ -642,6 +741,10 @@ def run(
                 assert tasks_path is not None
                 tasks_raw = json.loads(tasks_path.read_text())
                 tasks = [Task(**t) for t in tasks_raw]
+                if limit_tasks is not None:
+                    if limit_tasks < 1:
+                        raise typer.BadParameter("--limit-tasks must be >= 1")
+                    tasks = tasks[:limit_tasks]
                 results, summary = asyncio.run(
                     run_suite(tasks=tasks, adapter=adapter_obj, graders=graders, cfg=cfg, on_event=on_event)
                 )

@@ -4,11 +4,11 @@ from pathlib import Path
 
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
-from .providers import DaytonaProvider, SandboxCreateParams, SandboxResources
+from .providers import E2BProvider, SandboxCreateParams, SandboxResources
 from .workdir import resolve_workdir
 
 
-class DaytonaEnvironment(CloudSandboxEnvironment):
+class E2BEnvironment(CloudSandboxEnvironment):
     def __init__(
         self,
         *,
@@ -17,10 +17,7 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
         logs_dir: Path,
         config: EnvironmentConfig,
         environment_dir: Path | None,
-        task_digest: str | None,
         image: str | None,
-        snapshot_template_name: str | None = None,
-        network_block_all: bool | None = None,
         workdir: str | None = None,
     ):
         dockerfile = None
@@ -28,13 +25,6 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
             candidate = environment_dir / "Dockerfile"
             if candidate.exists():
                 dockerfile = candidate
-
-        snapshot_name = None
-        if snapshot_template_name and task_digest:
-            snapshot_name = snapshot_template_name.format(name=task_digest[:12])
-
-        if network_block_all is None:
-            network_block_all = not config.allow_internet
 
         resources = SandboxResources(
             cpus=config.cpus,
@@ -44,11 +34,11 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
         )
         params = SandboxCreateParams(
             image=image,
-            snapshot=snapshot_name,
+            snapshot=None,
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
-            network_block_all=network_block_all,
+            network_block_all=not config.allow_internet,
             build_timeout_sec=config.build_timeout_sec,
         )
         effective_workdir = resolve_workdir(
@@ -56,19 +46,17 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
             override=workdir,
             default="/workspace",
         )
-
         settings = CloudSandboxSettings(
             remote_workspace=effective_workdir,
             remote_logs="/logs",
             default_cwd=effective_workdir,
         )
-
         super().__init__(
             trial_id=trial_id,
             workspace_dir=workspace_dir,
             logs_dir=logs_dir,
             config=config,
-            provider=DaytonaProvider(),
+            provider=E2BProvider(),
             create_params=params,
             settings=settings,
         )

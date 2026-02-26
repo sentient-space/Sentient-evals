@@ -249,6 +249,12 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
   - Pluggable “sandbox backend” interface
   - First provider: pick one (e.g., Daytona/Modal/E2B), support single-container tasks initially
   - Document limitations (multi-container vs single-container)
+  - **Progress update (Feb 2026):**
+    - Cloud provider abstraction shipped via `CloudSandboxProvider` + `CloudSandboxEnvironment`.
+    - Daytona backend implemented and hardened.
+    - E2B backend now implemented (`--env e2b`) with provider lifecycle, exec, fs upload/download, event logs, and env metadata parity.
+    - Provider-aware concurrency gating supports both Daytona and E2B via task-level `environment.provider_concurrency`.
+    - Current limitation remains single-container task execution; Modal follow-up is deferred.
 
 - [ ] 12. CI templates + examples
   - Minimal example suites (toy + realistic)

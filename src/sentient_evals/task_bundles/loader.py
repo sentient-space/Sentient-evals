@@ -75,6 +75,7 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
             platform=platform,
             workdir=workdir,
             workspace_mount=workspace_mount,
+            provider_concurrency=env_cfg.get("provider_concurrency"),
         )
 
     lp_cfg = dict(cfg.get("local_python") or {})
@@ -83,6 +84,7 @@ def _parse_env(cfg: dict[str, Any]) -> EnvironmentSpec:
         build_timeout_sec=build_timeout_sec,
         resources=resources,
         entrypoint=lp_cfg.get("entrypoint"),
+        provider_concurrency=env_cfg.get("provider_concurrency"),
     )
 
 

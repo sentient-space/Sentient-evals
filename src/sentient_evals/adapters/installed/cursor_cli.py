@@ -28,7 +28,13 @@ class CursorCliAdapter(BaseInstalledAdapter):
                     'PATH="$HOME/.local/bin:$PATH"; '
                     'AGENT_BIN="$(command -v agent || command -v cursor-agent || true)"; '
                     '[ -n "$AGENT_BIN" ] || { echo "agent binary not found"; exit 127; }; '
+                    'AGENT_HELP="$("$AGENT_BIN" --help 2>/dev/null || true)"; '
+                    'EXTRA_FLAGS=""; '
+                    'printf "%s" "$AGENT_HELP" | grep -q -- "--force" && EXTRA_FLAGS="$EXTRA_FLAGS --force"; '
+                    'printf "%s" "$AGENT_HELP" | grep -q -- "--trust" && EXTRA_FLAGS="$EXTRA_FLAGS --trust"; '
+                    'printf "%s" "$AGENT_HELP" | grep -q -- "--yolo" && EXTRA_FLAGS="$EXTRA_FLAGS --yolo"; '
                     '"$AGENT_BIN" --print --output-format text '
+                    '${EXTRA_FLAGS} '
                     f"--model {shlex.quote(model)} "
                     '--api-key "$CURSOR_API_KEY" '
                     f"{escaped_instruction} "

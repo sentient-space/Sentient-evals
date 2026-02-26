@@ -48,8 +48,8 @@ Built-in installed adapters (run via `--adapter <name>`) mirror Harbor's CLI age
 - `mini-swe-agent`
 - `aider`
 
-These adapters install the CLI inside the trial environment at runtime .
-For sandboxed runs, use Docker or Daytona environments so the agent can be installed
+These adapters install the CLI inside the trial environment at runtime.
+For sandboxed runs, use Docker, Daytona, or E2B environments so the agent can be installed
 in an isolated container.
 
 ### Plug-and-play graders via config
@@ -114,10 +114,45 @@ Supported `--env` values:
 - `docker_sdk` (requires `sentient-evals[docker]`)
 - `podman_cli` (requires `podman` installed)
 - `daytona` (requires `sentient-evals[daytona]` and Daytona configured)
+- `e2b` (requires `sentient-evals[e2b]` and `E2B_API_KEY`)
+- `modal` (requires `sentient-evals[modal]`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET`)
 
 Notes:
 - Docker-based runs require Docker (or Podman) installed and running.
-- For parallel sandboxed evals, prefer `docker_cli` locally or `daytona` in the cloud.
+- For parallel sandboxed evals, prefer `docker_cli` locally or Daytona/E2B in the cloud.
+- Modal is a strong cloud alternative when Daytona/E2B networking or runtime installation constraints block runs.
+- If Daytona access is blocked (for example, client-side IP restrictions), use `--env e2b` as a cloud fallback.
+- Cloud backends currently assume **single-container** tasks (multi-container orchestration is not yet supported).
+- You can throttle cloud provider concurrency per task bundle via `environment.provider_concurrency` in `task.toml`.
+- E2B does not build per-task Dockerfiles at runtime. For container tasks on E2B, set `[environment].image` to a valid E2B template id (for example `base`).
+- Datasets that rely on Docker image parity (for example many SWE-bench style tasks with `FROM swebench/...`) should run on `docker_cli` or `daytona` unless you provide mapped E2B templates.
+
+Install E2B support:
+
+```bash
+pip install "sentient-evals[e2b]"
+export E2B_API_KEY=your_api_key
+```
+
+Example:
+
+```bash
+sentient-evals run --tasks-dir path/to/tasks --env e2b --adapter cursor-cli --config eval.toml
+```
+
+Install Modal support:
+
+```bash
+pip install "sentient-evals[modal]"
+export MODAL_TOKEN_ID=your_token_id
+export MODAL_TOKEN_SECRET=your_token_secret
+```
+
+Example:
+
+```bash
+sentient-evals run --tasks-dir path/to/tasks --env modal --adapter cursor-cli --config eval.toml
+```
 
 ## Output layout (local runs)
 

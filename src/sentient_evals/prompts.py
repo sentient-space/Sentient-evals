@@ -43,6 +43,8 @@ _ENVIRONMENT_TYPES = [
     "docker_sdk",
     "podman_cli",
     "daytona",
+    "e2b",
+    "modal",
 ]
 
 _DEFAULT_MODELS = {
@@ -222,3 +224,27 @@ def prompt_github_token() -> str | None:
     except KeyboardInterrupt:
         console.print()
         return None
+
+
+def prompt_concurrency(default: int = 1) -> int:
+    """Prompt for concurrency with a sensible default."""
+    default = max(1, int(default))
+    try:
+        if INQUIRER_AVAILABLE:
+            try:
+                result = inquirer.number(
+                    message="Enter concurrency:",
+                    default=default,
+                    float_allowed=False,
+                    min_allowed=1,
+                ).execute()
+                return int(result) if result else default
+            except Exception:
+                pass
+        result = Prompt.ask("Enter concurrency", default=str(default))
+        value = int(result)
+        return value if value >= 1 else default
+    except KeyboardInterrupt:
+        return default
+    except Exception:
+        return default
