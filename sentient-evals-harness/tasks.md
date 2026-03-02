@@ -233,6 +233,7 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
   - **Done**: Implemented `run`, `report`, `diff` (suite via `--suite-id`/`--config`, report/diff take run dirs).
 
 - [ ] 9. Hosted mode: worker execution contract (Sentient backend + workers)
+  - Same work as platform Task 17.5 (integration).
   - Define a minimal “run spec” and “trial spec” payload
   - Queue contract (job message schema; idempotency keys)
   - Worker writes:
@@ -241,20 +242,22 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
   - Concurrency controls + quotas at run level (avoid unbounded fan-out)
 
 - [ ] 10. Hosted mode: Sentient backend endpoints (control plane)
-  - Dataset upload/download (presigned URLs)
+  - Same work as platform Task 17.5 (integration). Dataset upload/download (presigned URLs)
   - Create run, list runs, get run, cancel run
   - Results endpoints: summary + drill-down to trials + artifact links
 
-- [ ] 11. cloud sandbox provider adapters (Harbor-like scaling)
+- [x] 11. cloud sandbox provider adapters (Harbor-like scaling) — **Done**
   - Pluggable “sandbox backend” interface
   - First provider: pick one (e.g., Daytona/Modal/E2B), support single-container tasks initially
   - Document limitations (multi-container vs single-container)
-  - **Progress update (Feb 2026):**
-    - Cloud provider abstraction shipped via `CloudSandboxProvider` + `CloudSandboxEnvironment`.
-    - Daytona backend implemented and hardened.
-    - E2B backend now implemented (`--env e2b`) with provider lifecycle, exec, fs upload/download, event logs, and env metadata parity.
-    - Provider-aware concurrency gating supports both Daytona and E2B via task-level `environment.provider_concurrency`.
-    - Current limitation remains single-container task execution; Modal follow-up is deferred.
+  - **Completed (Feb 2026):**
+    - Cloud provider abstraction: `CloudSandboxProvider` + `CloudSandboxEnvironment` in `sentient_evals.environments.cloud` and `environments.providers.base`.
+    - **Daytona**: `--env daytona`, full lifecycle, exec, fs, snapshot/image caching, shared client manager; optional extra `sentient-evals[daytona]`.
+    - **E2B**: `--env e2b`, provider lifecycle, exec, fs upload/download, event logs, env metadata; template build from Dockerfile/image; `E2B_API_KEY`.
+    - **Modal**: `--env modal`, `ModalProvider` + `ModalEnvironment`; image from Dockerfile/registry/debian_slim; app lookup, secrets, volumes, network allowlist; `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET`; optional `sentient-evals[modal]`.
+    - Factory and runner wire all three (`EnvironmentType.daytona`, `EnvironmentType.e2b`, `EnvironmentType.modal`) with backend-specific flags (`--daytona-*`, `--modal-*`, cloud API key env).
+    - Provider-aware concurrency gating via task-level `environment.provider_concurrency` for Daytona, E2B, and Modal.
+    - Limitation: single-container/single-sandbox task execution; multi-container not in scope for v1.
 
 - [ ] 12. CI templates + examples
   - Minimal example suites (toy + realistic)
@@ -265,6 +268,17 @@ So: we’re not inherently building a carbon copy, but we could end up there unl
   - Standardize “reward” reporting + trajectory capture suitable for RL-style evaluation
   - Add RL-specific metrics hooks (episode reward, success rate, step budget, cost/latency per episode)
   - Keep RL training/optimization out of v1; focus on evaluation harness contracts first
+  - **Clarifications (what “RL eval support” means in v1)**:
+    - **Canonical reward artifact**: require a machine-readable scalar reward per trial at `trials/<trial_id>/verifier/reward.json` (even if derived from `test.sh` exit code). Prefer schema:
+      - `reward` (float), `passed` (bool), `components` (dict of named sub-rewards), `reason` (string|optional)
+      - `episode_metrics` (steps/tool_calls/wall_time_ms/tokens/cost_usd/latency_ms as available)
+      - `task_id`, `trial_id`, `run_id`, `seed`, `harness_version`, `task_bundle_digest` (when using bundles)
+    - **Trajectory contract**: treat `trajectory.json` (ATIF) as the primary RL trajectory artifact; ensure events carry stable step indices + timestamps, and include tool-call timing/error metadata where available.
+    - **Run-level aggregation**: surface RL-friendly aggregates in `run_result.json` (mean/stddev of reward, success rate, reward histograms/quantiles, mean steps/tool calls, mean cost/latency per episode).
+    - **Rollout dataset export (no training)**: add an export path that converts completed runs into RL-consumable datasets:
+      - **rollouts**: JSONL of \{task, trajectory, reward, episode_metrics, provenance\}
+      - **preferences** (optional): derive (winner, loser) pairs from multi-trial tasks (useful for DPO-style training), but keep model training out of scope.
+    - **Reward shaping via graders**: define a consistent way to derive reward from multiple graders (e.g., weighted sum + floor/ceiling + required graders gate), and persist the exact reward function config in trial/run provenance for reproducibility.
 
 ## What the Sentient private CLI should do
 

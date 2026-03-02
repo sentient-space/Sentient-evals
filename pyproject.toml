@@ -1,11 +1,21 @@
 [project]
 name = "sentient-evals"
-version = "0.0.1"
+version = "0.1.0"
 description = "Universal evaluation harness for AI agents (local + embeddable)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Sentient", email = "oss@sentient.ai" }]
+keywords = ["ai", "agents", "evaluation", "benchmark", "harness", "llm"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "jinja2>=3.1",
   "pydantic>=2.7",
