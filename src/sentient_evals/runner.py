@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from math import sqrt
-from typing import Any, Callable, Literal, Sequence, TypeVar
-from contextlib import asynccontextmanager
+from typing import Any, Awaitable, Callable, Literal, Sequence, TypeVar
+from contextlib import asynccontextmanager, suppress
 
 from .adapters import AgentAdapter
 from .atif.converters import transcript_to_trajectory
@@ -78,6 +78,31 @@ def _trial_id(task_id: str, attempt: int) -> str:
     return f"{task_id}__{attempt}"
 
 
+async def _wait_for_cancel(cancel_path: Path, *, poll_interval_s: float = 0.5) -> None:
+    while not cancel_path.exists():
+        await asyncio.sleep(poll_interval_s)
+
+
+async def _await_or_cancel(
+    *,
+    trial_task: asyncio.Task[Any],
+    cancel_path: Path,
+) -> None:
+    cancel_task = asyncio.create_task(_wait_for_cancel(cancel_path))
+    try:
+        done, _ = await asyncio.wait({trial_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
+        if cancel_task in done and cancel_path.exists():
+            trial_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await trial_task
+            raise asyncio.CancelledError("cancelled")
+        await trial_task
+    finally:
+        cancel_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cancel_task
+
+
 def _best_effort_instruction(task: Task) -> str:
     for key in ("instruction", "prompt", "query", "question", "text", "input"):
         val = task.input.get(key) if isinstance(task.input, dict) else None
@@ -132,6 +157,57 @@ def _ensure_run_config(
 
 
 T = TypeVar("T")
+
+
+async def _run_trials_incrementally(
+    *,
+    trials: Sequence[tuple[T, int, int]],
+    max_in_flight: int,
+    cancel_path: Path,
+    runner: Callable[[T, int, int], Awaitable[TrialResult]],
+) -> list[TrialResult]:
+    """Run trials with bounded scheduling; stop materializing new work after cancel."""
+    if max_in_flight < 1:
+        raise ValueError(f"max_in_flight must be >= 1 (got {max_in_flight})")
+
+    results: list[TrialResult] = []
+    in_flight: set[asyncio.Task[TrialResult]] = set()
+    queue = iter(trials)
+
+    def _schedule_next() -> None:
+        while len(in_flight) < max_in_flight and not cancel_path.exists():
+            try:
+                item, attempt, seed = next(queue)
+            except StopIteration:
+                return
+            in_flight.add(asyncio.create_task(runner(item, attempt, seed)))
+
+    _schedule_next()
+    while in_flight:
+        done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+
+        for task in done:
+            if task.cancelled():
+                continue
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+            results.append(task.result())
+
+        if cancel_path.exists():
+            if in_flight:
+                for task in in_flight:
+                    task.cancel()
+                cancelled = await asyncio.gather(*in_flight, return_exceptions=True)
+                for value in cancelled:
+                    if isinstance(value, TrialResult):
+                        results.append(value)
+                in_flight = set()
+            break
+
+        _schedule_next()
+
+    return results
 
 
 def _seed_trials(items: Sequence[T], trials_per_task: int, seeds: list[int]) -> list[tuple[T, int, int]]:
@@ -499,32 +575,76 @@ async def run_suite(
                 env = ReplayingToolExecutor(log_path=replay_log, strict=cfg.strict_replay)
 
             artifacts = TrialArtifacts(writer.trial_dir(trial_id))
+            grader_results = []
             try:
-                _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=task.id)
-                timeout_s = task.timeout_seconds
-                if timeout_s is not None and timeout_s > 0:
-                    transcript, outcome = await asyncio.wait_for(
-                        _call_adapter(
+                async def _execute_trial() -> None:
+                    nonlocal transcript, outcome, ok, grader_results
+                    _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=task.id)
+                    timeout_s = task.timeout_seconds
+                    if timeout_s is not None and timeout_s > 0:
+                        transcript, outcome = await asyncio.wait_for(
+                            _call_adapter(
+                                adapter=adapter,
+                                task=task,
+                                instruction=_best_effort_instruction(task),
+                                seed=seed,
+                                env=env,
+                                artifacts=artifacts,
+                            ),
+                            timeout=timeout_s,
+                        )
+                    else:
+                        transcript, outcome = await _call_adapter(
                             adapter=adapter,
                             task=task,
                             instruction=_best_effort_instruction(task),
                             seed=seed,
                             env=env,
                             artifacts=artifacts,
-                        ),
-                        timeout=timeout_s,
-                    )
-                else:
-                    transcript, outcome = await _call_adapter(
-                        adapter=adapter,
-                        task=task,
-                        instruction=_best_effort_instruction(task),
-                        seed=seed,
-                        env=env,
-                        artifacts=artifacts,
-                    )
-                ok = True
-                _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=task.id)
+                        )
+                    ok = True
+                    _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=task.id)
+
+                    if ok:
+                        _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=task.id)
+                        for g in graders:
+                            if cancel_path.exists():
+                                raise asyncio.CancelledError("cancelled")
+                            try:
+                                if supports_env_grading(g):
+                                    result = await g.grade_with_env(  # type: ignore[attr-defined]
+                                        task=task,
+                                        transcript=transcript,
+                                        outcome=outcome.data,
+                                        artifacts=artifacts,
+                                        env=env,
+                                    )
+                                else:
+                                    result = await g.grade(
+                                        task=task, transcript=transcript, outcome=outcome.data, artifacts=artifacts
+                                    )
+                            except Exception as exc:  # pragma: no cover
+                                artifacts.verifier().write_json(
+                                    f"grader_error_{getattr(g, 'name', 'unknown')}.json",
+                                    {"error": str(exc)},
+                                )
+                                result = GraderResult(
+                                    name=getattr(g, "name", "unknown"),
+                                    score=0.0,
+                                    passed=False,
+                                    severity=Severity.error,
+                                    details={"error": str(exc)},
+                                )
+                            grader_results.append(result)
+                        _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=task.id)
+
+                trial_task = asyncio.create_task(_execute_trial())
+                await _await_or_cancel(trial_task=trial_task, cancel_path=cancel_path)
+            except asyncio.CancelledError:
+                err = "cancelled"
+                ok = False
+                error_path.write_text(err, encoding="utf-8")
+                _emit_event(on_event, "trial_cancelled", trial_id=trial_id, task_id=task.id)
             except asyncio.TimeoutError:
                 err = f"timeout after {task.timeout_seconds}s"
                 ok = False
@@ -549,38 +669,6 @@ async def run_suite(
             transcript_path = writer.write_transcript(trial_id, transcript)
             trajectory_path = writer.write_trajectory(trial_id, trajectory)
             outcome_path = writer.write_outcome(trial_id, outcome)
-
-            grader_results = []
-            if ok:
-                _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=task.id)
-                for g in graders:
-                    try:
-                        if supports_env_grading(g):
-                            result = await g.grade_with_env(  # type: ignore[attr-defined]
-                                task=task,
-                                transcript=transcript,
-                                outcome=outcome.data,
-                                artifacts=artifacts,
-                                env=env,
-                            )
-                        else:
-                            result = await g.grade(
-                                task=task, transcript=transcript, outcome=outcome.data, artifacts=artifacts
-                            )
-                    except Exception as exc:  # pragma: no cover
-                        artifacts.verifier().write_json(
-                            f"grader_error_{getattr(g, 'name', 'unknown')}.json",
-                            {"error": str(exc)},
-                        )
-                        result = GraderResult(
-                            name=getattr(g, "name", "unknown"),
-                            score=0.0,
-                            passed=False,
-                            severity=Severity.error,
-                            details={"error": str(exc)},
-                        )
-                    grader_results.append(result)
-                _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=task.id)
 
             trial_result = TrialResult(
                 ok=ok,
@@ -609,7 +697,12 @@ async def run_suite(
     if cancel_path.exists():
         new_results: list[TrialResult] = []
     else:
-        new_results = list(await asyncio.gather(*[_run_one(t, a, s) for (t, a, s) in trials]))
+        new_results = await _run_trials_incrementally(
+            trials=trials,
+            max_in_flight=cfg.suite.concurrency,
+            cancel_path=cancel_path,
+            runner=_run_one,
+        )
     results = results + new_results
 
     summary = _finalize_run(
@@ -786,76 +879,87 @@ async def run_suite_bundles(
 
                 grader_results = []
                 try:
-                    _emit_event(on_event, "env_start", trial_id=trial_id, task_id=bundle.task.id)
-                    await environment.start(force_build=False)
-                    _emit_event(on_event, "env_ready", trial_id=trial_id, task_id=bundle.task.id)
-               
-                    if bundle.files_dir is not None and bundle.files_dir.exists():
-                        await environment.upload_dir(bundle.files_dir, ".")
-                    if bundle.tests_dir is not None and bundle.tests_dir.exists():
-                        await environment.upload_dir(bundle.tests_dir, "/tests")
-                    
-                        await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
+                    async def _execute_trial() -> None:
+                        nonlocal transcript, outcome, ok, grader_results
+                        _emit_event(on_event, "env_start", trial_id=trial_id, task_id=bundle.task.id)
+                        await environment.start(force_build=False)
+                        _emit_event(on_event, "env_ready", trial_id=trial_id, task_id=bundle.task.id)
 
-                    artifacts = TrialArtifacts(writer.trial_dir(trial_id))
-                    _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
-                    timeout_s = bundle.task.timeout_seconds
-                    if timeout_s is not None and timeout_s > 0:
-                        transcript, outcome = await asyncio.wait_for(
-                            _call_adapter(
+                        if bundle.files_dir is not None and bundle.files_dir.exists():
+                            await environment.upload_dir(bundle.files_dir, ".")
+                        if bundle.tests_dir is not None and bundle.tests_dir.exists():
+                            await environment.upload_dir(bundle.tests_dir, "/tests")
+                            await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
+
+                        artifacts = TrialArtifacts(writer.trial_dir(trial_id))
+                        _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
+                        timeout_s = bundle.task.timeout_seconds
+                        if timeout_s is not None and timeout_s > 0:
+                            transcript, outcome = await asyncio.wait_for(
+                                _call_adapter(
+                                    adapter=adapter,
+                                    task=bundle.task,
+                                    instruction=bundle.instruction or _best_effort_instruction(bundle.task),
+                                    seed=seed,
+                                    env=tool_executor,
+                                    artifacts=artifacts,
+                                ),
+                                timeout=timeout_s,
+                            )
+                        else:
+                            transcript, outcome = await _call_adapter(
                                 adapter=adapter,
                                 task=bundle.task,
                                 instruction=bundle.instruction or _best_effort_instruction(bundle.task),
                                 seed=seed,
                                 env=tool_executor,
                                 artifacts=artifacts,
-                            ),
-                            timeout=timeout_s,
-                        )
-                    else:
-                        transcript, outcome = await _call_adapter(
-                            adapter=adapter,
-                            task=bundle.task,
-                            instruction=bundle.instruction or _best_effort_instruction(bundle.task),
-                            seed=seed,
-                            env=tool_executor,
-                            artifacts=artifacts,
-                        )
-                    ok = True
-                    _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=bundle.task.id)
-                    if ok:
-                        _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=bundle.task.id)
-                        for g in graders:
-                            try:
-                                if supports_env_grading(g):
-                                    result = await g.grade_with_env(  # type: ignore[attr-defined]
-                                        task=bundle.task,
-                                        transcript=transcript,
-                                        outcome=outcome.data,
-                                        artifacts=artifacts,
-                                        env=tool_executor,
-                                    )
-                                else:
-                                    result = await g.grade(
-                                        task=bundle.task,
-                                        transcript=transcript,
-                                        outcome=outcome.data,
-                                        artifacts=artifacts,
-                                    )
-                            except Exception as exc:  # pragma: no cover
-                                artifacts.verifier().write_json(
-                                    f"grader_error_{getattr(g, 'name', 'unknown')}.json",
-                                    {"error": str(exc)},
-                                )
-                                result = GraderResult(
-                                    name=getattr(g, "name", "unknown"),
-                                    score=0.0,
-                                    passed=False,
-                                    severity=Severity.error,
-                                    details={"error": str(exc)},
                             )
-                            grader_results.append(result)
-                        _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)
+                        ok = True
+                        _emit_event(on_event, "adapter_done", trial_id=trial_id, task_id=bundle.task.id)
+                        if ok:
+                            _emit_event(on_event, "grading_start", trial_id=trial_id, task_id=bundle.task.id)
+                            for g in graders:
+                                if cancel_path.exists():
+                                    raise asyncio.CancelledError("cancelled")
+                                try:
+                                    if supports_env_grading(g):
+                                        result = await g.grade_with_env(  # type: ignore[attr-defined]
+                                            task=bundle.task,
+                                            transcript=transcript,
+                                            outcome=outcome.data,
+                                            artifacts=artifacts,
+                                            env=tool_executor,
+                                        )
+                                    else:
+                                        result = await g.grade(
+                                            task=bundle.task,
+                                            transcript=transcript,
+                                            outcome=outcome.data,
+                                            artifacts=artifacts,
+                                        )
+                                except Exception as exc:  # pragma: no cover
+                                    artifacts.verifier().write_json(
+                                        f"grader_error_{getattr(g, 'name', 'unknown')}.json",
+                                        {"error": str(exc)},
+                                    )
+                                    result = GraderResult(
+                                        name=getattr(g, "name", "unknown"),
+                                        score=0.0,
+                                        passed=False,
+                                        severity=Severity.error,
+                                        details={"error": str(exc)},
+                                    )
+                                grader_results.append(result)
+                            _emit_event(on_event, "grading_done", trial_id=trial_id, task_id=bundle.task.id)
+
+                    trial_task = asyncio.create_task(_execute_trial())
+                    await _await_or_cancel(trial_task=trial_task, cancel_path=cancel_path)
+                except asyncio.CancelledError:
+                    err = "cancelled"
+                    ok = False
+                    error_path.write_text(err, encoding="utf-8")
+                    _emit_event(on_event, "trial_cancelled", trial_id=trial_id, task_id=bundle.task.id)
                 except asyncio.TimeoutError:
                     err = f"timeout after {bundle.task.timeout_seconds}s"
                     ok = False
@@ -913,7 +1017,12 @@ async def run_suite_bundles(
     if cancel_path.exists():
         new_results: list[TrialResult] = []
     else:
-        new_results = list(await asyncio.gather(*[_run_one(b, a, s) for (b, a, s) in trials]))
+        new_results = await _run_trials_incrementally(
+            trials=trials,
+            max_in_flight=cfg.suite.concurrency,
+            cancel_path=cancel_path,
+            runner=_run_one,
+        )
     results = results + new_results
 
     tasks = [b.task for b in bundles]

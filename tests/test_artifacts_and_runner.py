@@ -288,3 +288,64 @@ def test_run_suite_bundles_modal_uses_provider_limit(tmp_path: Path, monkeypatch
         )
     )
     assert called["value"] is True
+
+
+class SlowAdapter:
+    name = "slow"
+
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
+        await asyncio.sleep(0.2)
+        return (
+            [TranscriptEvent(kind="message", role="assistant", content=f"task={task.id}")],
+            Outcome(summary="ok", data={"answer": "x"}),
+        )
+
+
+def test_run_suite_bundles_cancel_stops_scheduling_pending_trials(tmp_path: Path):
+    task_dir = tmp_path / "tasks" / "t1"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text(
+        '\n'.join(
+            [
+                'id = "t1"',
+                "",
+                "[environment]",
+                'type = "local_python"',
+                "",
+                "[input]",
+                'q = "?"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "instruction.md").write_text("do thing", encoding="utf-8")
+    bundles = load_task_bundles(task_dir.parent)
+
+    run_id = "r_cancel_mid"
+    suite = SuiteConfig(id="s", trials_per_task=5, concurrency=1, seeds=[1, 2, 3, 4, 5])
+    cfg = RunConfig(run_id=run_id, suite=suite, jobs_dir=tmp_path, adapter_name="slow")
+    cancel_path = tmp_path / run_id / "cancel.json"
+
+    saw_first_trial = {"value": False}
+
+    def on_event(event: str, payload: dict):
+        if event == "trial_start" and not saw_first_trial["value"]:
+            saw_first_trial["value"] = True
+            cancel_path.parent.mkdir(parents=True, exist_ok=True)
+            cancel_path.write_text("{}", encoding="utf-8")
+
+    results, _summary = asyncio.run(
+        run_suite_bundles(
+            bundles=bundles,
+            adapter=SlowAdapter(),
+            graders=[],
+            cfg=cfg,
+            on_event=on_event,
+        )
+    )
+
+    assert saw_first_trial["value"] is True
+    assert len(results) == 1
+    assert results[0].trial_id == "t1__0"
+    assert results[0].error == "cancelled"

@@ -447,11 +447,60 @@ class E2BProvider(CloudSandboxProvider):
             await self._invoke(set_timeout, timeout=timeout)
 
     async def _kill_or_close(self, sandbox: Any) -> None:
-        for name in ("kill", "close", "shutdown", "stop"):
+        sandbox_id = None
+        for key in ("id", "sandbox_id", "uid"):
+            val = getattr(sandbox, key, None)
+            if val:
+                sandbox_id = str(val)
+                break
+
+        kill = getattr(sandbox, "kill", None)
+        if callable(kill):
+            try:
+                result = await self._invoke(kill, request_timeout=10.0)
+            except TypeError:
+                result = await self._invoke(kill)
+            if result is False and sandbox_id:
+                await self._kill_by_id(sandbox_id)
+            await self._ensure_not_running(sandbox, sandbox_id)
+            return
+
+        if sandbox_id:
+            await self._kill_by_id(sandbox_id)
+            await self._ensure_not_running(sandbox, sandbox_id)
+            return
+
+        for name in ("close", "shutdown", "stop"):
             fn = getattr(sandbox, name, None)
             if callable(fn):
                 await self._invoke(fn)
                 return
+
+    async def _kill_by_id(self, sandbox_id: str) -> None:
+        Sandbox = self._sandbox_cls()
+        kill = getattr(Sandbox, "kill", None)
+        if not callable(kill):
+            raise RuntimeError("E2B Sandbox class does not expose static kill()")
+        try:
+            await self._invoke(kill, sandbox_id, request_timeout=10.0)
+        except TypeError:
+            await self._invoke(kill, sandbox_id)
+
+    async def _ensure_not_running(self, sandbox: Any, sandbox_id: str | None) -> None:
+        is_running = getattr(sandbox, "is_running", None)
+        if callable(is_running):
+            try:
+                running = await self._invoke(is_running, request_timeout=5.0)
+            except TypeError:
+                running = await self._invoke(is_running)
+            if running and sandbox_id:
+                await self._kill_by_id(sandbox_id)
+                try:
+                    running = await self._invoke(is_running, request_timeout=5.0)
+                except TypeError:
+                    running = await self._invoke(is_running)
+            if running:
+                raise RuntimeError(f"E2B sandbox {sandbox_id or '<unknown>'} is still running after kill()")
 
     async def _call_with_optional_user(self, fn, *args, **kwargs):
         kwargs_with_user = dict(kwargs)

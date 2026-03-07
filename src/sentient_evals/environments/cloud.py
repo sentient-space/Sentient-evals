@@ -61,6 +61,7 @@ class CloudSandboxEnvironment(BaseEnvironment):
     async def stop(self, *, delete: bool = True) -> None:
         if self._sandbox is None:
             return
+        cleanup_error: Exception | None = None
         try:
             try:
                 await self.download_dir(self._settings.remote_logs, self.logs_dir)
@@ -76,9 +77,11 @@ class CloudSandboxEnvironment(BaseEnvironment):
                     await self._call_with_retry(
                         "stop_sandbox", self._provider.stop, self._sandbox, retries=1
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                cleanup_error = exc
             self._sandbox = None
+            if cleanup_error is not None:
+                raise cleanup_error
 
     async def exec(self, cmd: str, *, timeout_s: float | None = None) -> ExecResult:
         if self._sandbox is None:

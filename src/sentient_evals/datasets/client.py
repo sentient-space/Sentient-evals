@@ -1,4 +1,3 @@
-"""High-level client for dataset operations."""
 
 from __future__ import annotations
 
