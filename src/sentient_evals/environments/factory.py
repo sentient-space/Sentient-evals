@@ -45,6 +45,7 @@ class EnvironmentFactory:
         modal_volumes: tuple[str, ...] = (),
         modal_cidr_allowlist: tuple[str, ...] = (),
         modal_allow_network: bool = False,
+        adapter_name: str | None = None,
     ) -> BaseEnvironment:
         if env_type == EnvironmentType.local_python:
             from .local_python import LocalPythonEnvironment
@@ -116,6 +117,7 @@ class EnvironmentFactory:
                 config=cfg,
                 environment_dir=task_environment_dir,
                 image=container_image,
+                adapter_name=adapter_name,
                 workdir=container_workdir,
             )
 

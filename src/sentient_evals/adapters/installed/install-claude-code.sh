@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# If Claude is preinstalled in the environment template, skip reinstall.
+if command -v claude >/dev/null 2>&1; then
+    claude --version || true
+    exit 0
+fi
+
 # Install curl if not available
 if command -v apk &> /dev/null; then
     apk add --no-cache curl bash

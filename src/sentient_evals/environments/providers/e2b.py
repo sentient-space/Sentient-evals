@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import shlex
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,25 @@ def _strip_dockerfile_comments(dockerfile: Path) -> str:
     return f"{content}\n" if content else ""
 
 
+def _adapter_name(params: SandboxCreateParams) -> str | None:
+    options = params.provider_options or {}
+    raw = options.get("adapter_name")
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()
+    return value or None
+
+
+def _claude_template_build_memory_mb() -> int:
+    raw = os.environ.get("SENTIENT_E2B_CLAUDE_TEMPLATE_BUILD_MEMORY_MB", "").strip()
+    if raw:
+        try:
+            return max(512, int(raw))
+        except ValueError:
+            pass
+    return 4096
+
+
 class E2BProvider(CloudSandboxProvider):
     name = "e2b"
     _preferred_user = "root"
@@ -141,6 +161,12 @@ class E2BProvider(CloudSandboxProvider):
                 except TypeError:
                     continue
                 except Exception as exc:
+                    if self._should_rebuild_missing_managed_template(
+                        exc=exc,
+                        template=template,
+                        params=params,
+                    ):
+                        return await self.create(params.with_force_build(True))
                     self._raise_friendly_auth_error(exc)
 
         try:
@@ -151,6 +177,12 @@ class E2BProvider(CloudSandboxProvider):
                 await self._set_timeout(sandbox, timeout)
             return sandbox
         except Exception as exc:
+            if self._should_rebuild_missing_managed_template(
+                exc=exc,
+                template=template,
+                params=params,
+            ):
+                return await self.create(params.with_force_build(True))
             self._raise_friendly_auth_error(exc)
 
     async def delete(self, sandbox: Any) -> None:
@@ -280,11 +312,136 @@ class E2BProvider(CloudSandboxProvider):
         if image and _looks_like_template_id(image):
             return image
 
+        adapter_name = _adapter_name(params)
+        if adapter_name == "claude-code":
+            override_alias = os.environ.get("SENTIENT_E2B_TEMPLATE_ALIAS_CLAUDE_CODE")
+            if isinstance(override_alias, str):
+                override_alias = override_alias.strip()
+                if override_alias:
+                    return override_alias
+
+            if not image and params.dockerfile is None:
+                return "claude"
+
+            try:
+                return await self._build_or_reuse_claude_augmented_template(params, source_image=image)
+            except Exception as exc:
+                warnings.warn(
+                    "Failed to build Claude-augmented E2B template; "
+                    "falling back to task template + runtime adapter install. "
+                    f"Cause: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         should_build = bool(image) or params.dockerfile is not None
         if not should_build:
             return "base"
 
         return await self._build_or_reuse_template(params, source_image=image)
+
+    async def _build_or_reuse_claude_augmented_template(
+        self,
+        params: SandboxCreateParams,
+        *,
+        source_image: str | None,
+    ) -> str:
+        template_cls, async_template_cls = self._template_classes()
+        if template_cls is None or async_template_cls is None:
+            raise RuntimeError(
+                "E2B template build requires the e2b SDK Template APIs. "
+                "Install/update `e2b` and provide a valid template id in [environment].image as fallback."
+            )
+
+        alias = self._claude_augmented_template_alias(params, source_image=source_image)
+        exists = await self._template_alias_exists(async_template_cls, alias)
+        if params.force_build or not exists:
+            template = self._create_claude_augmented_template_definition(
+                template_cls,
+                source_image=source_image,
+                dockerfile=params.dockerfile,
+            )
+            build_kwargs: dict[str, Any] = {
+                "template": template,
+                "alias": alias,
+            }
+            default_memory_mb = _claude_template_build_memory_mb()
+            if params.resources is not None:
+                if params.resources.cpus is not None:
+                    build_kwargs["cpu_count"] = params.resources.cpus
+                if params.resources.memory_mb is not None:
+                    build_kwargs["memory_mb"] = int(params.resources.memory_mb)
+            if "memory_mb" not in build_kwargs:
+                build_kwargs["memory_mb"] = default_memory_mb
+            await self._invoke(async_template_cls.build, **build_kwargs)
+        return alias
+
+    def _claude_augmented_template_alias(
+        self,
+        params: SandboxCreateParams,
+        *,
+        source_image: str | None,
+    ) -> str:
+        marker = b"claude-template-v1"
+        if source_image:
+            digest = hashlib.sha256(f"image:{source_image}".encode("utf-8") + marker).hexdigest()
+        elif params.context_dir and params.context_dir.exists():
+            tree = _hash_path_tree(params.context_dir).encode("utf-8")
+            digest = hashlib.sha256(tree + marker).hexdigest()
+        elif params.dockerfile and params.dockerfile.exists():
+            digest = hashlib.sha256(params.dockerfile.read_bytes() + marker).hexdigest()
+        else:
+            digest = hashlib.sha256(b"claude-base" + marker).hexdigest()
+        return f"sentient-e2b-claude-{digest[:16]}"
+
+    def _create_claude_augmented_template_definition(
+        self,
+        template_cls: Any,
+        *,
+        source_image: str | None,
+        dockerfile: Path | None,
+    ) -> Any:
+        template = template_cls()
+        from_dockerfile = getattr(template, "from_dockerfile", None)
+        if not callable(from_dockerfile):
+            raise RuntimeError("E2B Template API does not expose from_dockerfile()")
+
+        install_layer = (
+            "ENV DEBIAN_FRONTEND=noninteractive\n"
+            "RUN apt-get update \\\n"
+            " && apt-get install -y --no-install-recommends ca-certificates curl bash \\\n"
+            " && rm -rf /var/lib/apt/lists/*\n"
+            "RUN curl -fsSL https://claude.ai/install.sh | bash\n"
+            "ENV PATH=/root/.local/bin:$PATH\n"
+        )
+        if source_image:
+            dockerfile_content = f"FROM {source_image}\n{install_layer}"
+        else:
+            if dockerfile is None:
+                raise RuntimeError("E2B template build requires source image or dockerfile")
+            base_content = _strip_dockerfile_comments(dockerfile)
+            if not base_content:
+                base_content = dockerfile.read_text(encoding="utf-8", errors="replace")
+            dockerfile_content = f"{base_content.rstrip()}\n\n{install_layer}"
+
+        try:
+            return from_dockerfile(dockerfile_content_or_path=dockerfile_content)
+        except TypeError:
+            return from_dockerfile(dockerfile_content)
+
+    @staticmethod
+    def _should_rebuild_missing_managed_template(
+        *,
+        exc: Exception,
+        template: str,
+        params: SandboxCreateParams,
+    ) -> bool:
+        if params.force_build:
+            return False
+        if not template.startswith("sentient-e2b-"):
+            return False
+        message = str(exc).lower()
+        return "template" in message and "not found" in message and "404" in message
 
     async def _build_or_reuse_template(
         self,

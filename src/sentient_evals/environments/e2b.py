@@ -18,6 +18,7 @@ class E2BEnvironment(CloudSandboxEnvironment):
         config: EnvironmentConfig,
         environment_dir: Path | None,
         image: str | None,
+        adapter_name: str | None = None,
         workdir: str | None = None,
     ):
         dockerfile = None
@@ -38,6 +39,7 @@ class E2BEnvironment(CloudSandboxEnvironment):
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
+            provider_options={"adapter_name": adapter_name} if adapter_name else None,
             network_block_all=not config.allow_internet,
             build_timeout_sec=config.build_timeout_sec,
         )

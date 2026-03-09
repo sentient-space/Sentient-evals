@@ -88,6 +88,19 @@ class _FakeSandboxClass:
         return _FakeSandbox()
 
 
+class _FlakySandboxClass:
+    last_kwargs: dict[str, object] | None = None
+    calls: int = 0
+
+    @classmethod
+    def beta_create(cls, **kwargs):
+        cls.calls += 1
+        if cls.calls == 1:
+            raise RuntimeError("404: template 'lrmu3bmqtjnvximifclr' not found")
+        cls.last_kwargs = kwargs
+        return _FakeSandbox()
+
+
 class _FakeTemplateBuilder:
     def __init__(self) -> None:
         self.definition: tuple[str, str] | None = None
@@ -304,3 +317,92 @@ async def test_e2b_provider_reuses_existing_template_alias(monkeypatch):
     assert _FakeSandboxClass.last_kwargs is not None
     assert _FakeSandboxClass.last_kwargs["template"] == existing_alias
     assert _FakeAsyncTemplate.build_calls == []
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_uses_builtin_claude_template_when_no_task_image(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    provider = E2BProvider()
+    sandbox = await provider.create(SandboxCreateParams(provider_options={"adapter_name": "claude-code"}))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    assert _FakeSandboxClass.last_kwargs["template"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_builds_claude_augmented_template_from_dockerfile(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM python:3.11-slim\nWORKDIR /workspace\n", encoding="utf-8")
+    provider = E2BProvider()
+    sandbox = await provider.create(
+        SandboxCreateParams(
+            dockerfile=dockerfile,
+            context_dir=tmp_path,
+            provider_options={"adapter_name": "claude-code"},
+        )
+    )
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    alias = _FakeSandboxClass.last_kwargs["template"]
+    assert isinstance(alias, str)
+    assert alias.startswith("sentient-e2b-claude-")
+    assert _FakeAsyncTemplate.build_calls
+    template = _FakeAsyncTemplate.build_calls[0]["template"]
+    assert template["kind"] == "dockerfile"
+    assert "curl -fsSL https://claude.ai/install.sh | bash" in template["path"]
+    assert _FakeAsyncTemplate.build_calls[0]["memory_mb"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_claude_augmented_template_respects_explicit_memory(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM python:3.11-slim\nWORKDIR /workspace\n", encoding="utf-8")
+    provider = E2BProvider()
+    sandbox = await provider.create(
+        SandboxCreateParams(
+            dockerfile=dockerfile,
+            context_dir=tmp_path,
+            provider_options={"adapter_name": "claude-code"},
+            resources=SandboxResources(memory_mb=2048),
+        )
+    )
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.build_calls[0]["memory_mb"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_rebuilds_managed_template_when_sandbox_create_404(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FlakySandboxClass))
+    provider = E2BProvider()
+    seen_force_build: list[bool] = []
+
+    async def _fake_resolve(params: SandboxCreateParams) -> str:
+        seen_force_build.append(params.force_build)
+        return "sentient-e2b-claude-deadbeef"
+
+    monkeypatch.setattr(provider, "_resolve_template", _fake_resolve)
+
+    sandbox = await provider.create(SandboxCreateParams())
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert seen_force_build == [False, True]
+    assert _FlakySandboxClass.last_kwargs is not None
+    assert _FlakySandboxClass.last_kwargs["template"] == "sentient-e2b-claude-deadbeef"

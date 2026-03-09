@@ -866,6 +866,7 @@ async def run_suite_bundles(
                     modal_volumes=cfg.modal_volumes,
                     modal_cidr_allowlist=cfg.modal_cidr_allowlist,
                     modal_allow_network=cfg.modal_allow_network,
+                    adapter_name=cfg.adapter_name,
                 )
 
                 recorder: RecordingToolExecutor | None = None
