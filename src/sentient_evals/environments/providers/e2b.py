@@ -461,6 +461,7 @@ class E2BProvider(CloudSandboxProvider):
         if params.force_build or not exists:
             template = self._create_template_definition(
                 template_cls,
+                params=params,
                 source_image=source_image,
                 dockerfile=params.dockerfile,
             )
@@ -491,6 +492,7 @@ class E2BProvider(CloudSandboxProvider):
         self,
         template_cls: Any,
         *,
+        params: SandboxCreateParams,
         source_image: str | None,
         dockerfile: Path | None,
     ) -> Any:
@@ -499,6 +501,13 @@ class E2BProvider(CloudSandboxProvider):
             from_image = getattr(template, "from_image", None)
             if not callable(from_image):
                 raise RuntimeError("E2B Template API does not expose from_image()")
+            registry_auth = self._registry_auth(params)
+            if registry_auth is not None:
+                username, password = registry_auth
+                try:
+                    return from_image(image=source_image, username=username, password=password)
+                except TypeError:
+                    return from_image(source_image, username=username, password=password)
             return from_image(image=source_image)
         if dockerfile is None:
             raise RuntimeError("E2B template build requires source image or dockerfile")
@@ -517,6 +526,18 @@ class E2BProvider(CloudSandboxProvider):
             return from_dockerfile(dockerfile_content_or_path=str(dockerfile))
         except TypeError:
             return from_dockerfile(str(dockerfile))
+
+    @staticmethod
+    def _registry_auth(params: SandboxCreateParams) -> tuple[str, str] | None:
+        options = params.provider_options or {}
+        raw = options.get("registry_auth")
+        if not isinstance(raw, dict):
+            return None
+        username = str(raw.get("username") or "").strip()
+        password = str(raw.get("password") or "").strip()
+        if not username or not password:
+            return None
+        return username, password
 
     async def _template_alias_exists(self, async_template_cls: Any, alias: str) -> bool:
         alias_exists = getattr(async_template_cls, "alias_exists", None)

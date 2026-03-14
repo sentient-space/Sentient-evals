@@ -59,6 +59,7 @@ class RunConfig:
     modal_volumes: tuple[str, ...] = ()
     modal_cidr_allowlist: tuple[str, ...] = ()
     modal_allow_network: bool = False
+    provider_options: dict[str, Any] | None = None
 
 
 def _wilson_ci95(passed: int, n: int) -> tuple[float, float]:
@@ -867,6 +868,7 @@ async def run_suite_bundles(
                     modal_cidr_allowlist=cfg.modal_cidr_allowlist,
                     modal_allow_network=cfg.modal_allow_network,
                     adapter_name=cfg.adapter_name,
+                    provider_options=cfg.provider_options,
                 )
 
                 recorder: RecordingToolExecutor | None = None

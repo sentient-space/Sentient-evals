@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
@@ -20,6 +21,7 @@ class E2BEnvironment(CloudSandboxEnvironment):
         image: str | None,
         adapter_name: str | None = None,
         workdir: str | None = None,
+        provider_options: dict[str, Any] | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -33,13 +35,17 @@ class E2BEnvironment(CloudSandboxEnvironment):
             storage_mb=config.storage_mb,
             gpus=config.gpus,
         )
+        merged_provider_options = dict(provider_options or {})
+        if adapter_name:
+            merged_provider_options.setdefault("adapter_name", adapter_name)
+
         params = SandboxCreateParams(
             image=image,
             snapshot=None,
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
-            provider_options={"adapter_name": adapter_name} if adapter_name else None,
+            provider_options=merged_provider_options or None,
             network_block_all=not config.allow_internet,
             build_timeout_sec=config.build_timeout_sec,
         )

@@ -46,6 +46,7 @@ class EnvironmentFactory:
         modal_cidr_allowlist: tuple[str, ...] = (),
         modal_allow_network: bool = False,
         adapter_name: str | None = None,
+        provider_options: dict[str, Any] | None = None,
     ) -> BaseEnvironment:
         if env_type == EnvironmentType.local_python:
             from .local_python import LocalPythonEnvironment
@@ -119,6 +120,7 @@ class EnvironmentFactory:
                 image=container_image,
                 adapter_name=adapter_name,
                 workdir=container_workdir,
+                provider_options=provider_options,
             )
 
         if env_type == EnvironmentType.modal:
