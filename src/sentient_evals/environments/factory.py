@@ -106,6 +106,7 @@ class EnvironmentFactory:
                 snapshot_template_name=daytona_snapshot_template,
                 network_block_all=daytona_network_block_all,
                 workdir=container_workdir,
+                provider_options=provider_options,
             )
 
         if env_type == EnvironmentType.e2b:

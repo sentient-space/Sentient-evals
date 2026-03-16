@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -43,10 +42,10 @@ class ClaudeCodeAdapter(BaseInstalledAdapter):
     def create_run_commands(self, instruction: str, *, task, seed: int) -> list[ExecCommand]:
         escaped_instruction = shlex.quote(instruction)
         env = {
-            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", None),
-            "CLAUDE_CODE_OAUTH_TOKEN": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
-            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS", None),
+            "ANTHROPIC_API_KEY": self._env_get("ANTHROPIC_API_KEY", ""),
+            "ANTHROPIC_BASE_URL": self._env_get("ANTHROPIC_BASE_URL"),
+            "CLAUDE_CODE_OAUTH_TOKEN": self._env_get("CLAUDE_CODE_OAUTH_TOKEN", ""),
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": self._env_get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"),
             "FORCE_AUTO_BACKGROUND_TASKS": "1",
             "ENABLE_BACKGROUND_TASKS": "1",
         }
@@ -56,8 +55,8 @@ class ClaudeCodeAdapter(BaseInstalledAdapter):
                 env["ANTHROPIC_MODEL"] = self.model_name
             else:
                 env["ANTHROPIC_MODEL"] = self.model_name.split("/")[-1]
-        elif "ANTHROPIC_MODEL" in os.environ:
-            env["ANTHROPIC_MODEL"] = os.environ["ANTHROPIC_MODEL"]
+        elif self._env_has("ANTHROPIC_MODEL"):
+            env["ANTHROPIC_MODEL"] = self._env_get("ANTHROPIC_MODEL", "")
         if "ANTHROPIC_BASE_URL" in env and "ANTHROPIC_MODEL" in env:
             env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = env["ANTHROPIC_MODEL"]
             env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = env["ANTHROPIC_MODEL"]
@@ -67,8 +66,8 @@ class ClaudeCodeAdapter(BaseInstalledAdapter):
         max_thinking_tokens = self._max_thinking_tokens
         if max_thinking_tokens is not None:
             env["MAX_THINKING_TOKENS"] = str(max_thinking_tokens)
-        elif "MAX_THINKING_TOKENS" in os.environ:
-            env["MAX_THINKING_TOKENS"] = os.environ["MAX_THINKING_TOKENS"]
+        elif self._env_has("MAX_THINKING_TOKENS"):
+            env["MAX_THINKING_TOKENS"] = self._env_get("MAX_THINKING_TOKENS", "")
         env["CLAUDE_CONFIG_DIR"] = "/logs/agent/sessions"
         return [
             ExecCommand(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -25,10 +24,10 @@ class CodexAdapter(BaseInstalledAdapter):
         if not self.model_name:
             raise ValueError("model_name is required")
         model = self.model_name.split("/")[-1]
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not self._env_has("OPENAI_API_KEY"):
             raise ValueError("codex adapter requires OPENAI_API_KEY environment variable")
         env = {
-            "OPENAI_API_KEY": os.environ["OPENAI_API_KEY"],
+            "OPENAI_API_KEY": self._env_get("OPENAI_API_KEY", ""),
             "CODEX_HOME": "/logs/agent",
         }
         reasoning_effort = self._reasoning_effort

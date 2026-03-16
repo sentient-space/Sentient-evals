@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -20,9 +19,9 @@ class AiderAdapter(BaseInstalledAdapter):
             raise ValueError("model_name must be in format provider/model_name")
         provider, model = self.model_name.split("/", 1)
         if provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = self._env_get("OPENAI_API_KEY")
         elif provider == "anthropic":
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            api_key = self._env_get("ANTHROPIC_API_KEY")
         else:
             raise ValueError(f"Unsupported provider: {provider}")
         if not api_key:

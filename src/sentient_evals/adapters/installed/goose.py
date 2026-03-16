@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
@@ -39,28 +38,28 @@ class GooseAdapter(BaseInstalledAdapter):
         provider, model = self.model_name.split("/", 1)
         env = {"GOOSE_MODEL": model, "GOOSE_PROVIDER": provider}
         if provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = self._env_get("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY environment variable not set")
             env["OPENAI_API_KEY"] = api_key
         elif provider == "anthropic":
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            api_key = self._env_get("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY environment variable not set")
             env["ANTHROPIC_API_KEY"] = api_key
         elif provider == "databricks":
-            host = os.environ.get("DATABRICKS_HOST")
-            token = os.environ.get("DATABRICKS_TOKEN")
+            host = self._env_get("DATABRICKS_HOST")
+            token = self._env_get("DATABRICKS_TOKEN")
             if not host or not token:
                 raise ValueError("DATABRICKS_HOST and DATABRICKS_TOKEN are required")
             env["DATABRICKS_HOST"] = host
             env["DATABRICKS_TOKEN"] = token
         elif provider == "tetrate":
-            api_key = os.environ.get("TETRATE_API_KEY")
+            api_key = self._env_get("TETRATE_API_KEY")
             if not api_key:
                 raise ValueError("TETRATE_API_KEY environment variable not set")
             env["TETRATE_API_KEY"] = api_key
-            host = os.environ.get("TETRATE_HOST")
+            host = self._env_get("TETRATE_HOST")
             if host:
                 env["TETRATE_HOST"] = host
         else:

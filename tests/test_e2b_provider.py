@@ -164,6 +164,24 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_e2b_provider_prefers_explicit_api_key_over_process_env(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    monkeypatch.setenv("E2B_API_KEY", "process-key")
+    provider = E2BProvider()
+
+    sandbox = await provider.create(
+        SandboxCreateParams(
+            image="template-123",
+            provider_options={"api_key": "explicit-key"},
+        )
+    )
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    assert _FakeSandboxClass.last_kwargs["api_key"] == "explicit-key"
+
+
+@pytest.mark.asyncio
 async def test_e2b_provider_exec_coerces_nonzero_command_exception(monkeypatch):
     monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
     provider = E2BProvider()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .base import EnvironmentConfig
 from .cloud import CloudSandboxEnvironment, CloudSandboxSettings
@@ -22,6 +23,7 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
         snapshot_template_name: str | None = None,
         network_block_all: bool | None = None,
         workdir: str | None = None,
+        provider_options: dict[str, Any] | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -48,6 +50,7 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
+            provider_options=dict(provider_options or {}) or None,
             network_block_all=network_block_all,
             build_timeout_sec=config.build_timeout_sec,
         )

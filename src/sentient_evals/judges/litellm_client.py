@@ -7,6 +7,8 @@ from .base import JudgeClient, JudgeResponse
 
 @dataclass(frozen=True)
 class LiteLLMJudgeClient(JudgeClient):
+    api_key: str | None = None
+
     async def score(
         self,
         *,
@@ -25,6 +27,7 @@ class LiteLLMJudgeClient(JudgeClient):
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             max_tokens=max_tokens,
+            api_key=self.api_key,
         )
         try:
             raw = resp.model_dump()

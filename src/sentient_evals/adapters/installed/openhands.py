@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -43,29 +42,29 @@ class OpenHandsAdapter(BaseInstalledAdapter):
     def create_run_commands(self, instruction: str, *, task, seed: int) -> list[ExecCommand]:
         escaped_instruction = shlex.quote(instruction)
         env: dict[str, str] = {}
-        if "LLM_API_KEY" in os.environ:
-            env["LLM_API_KEY"] = os.environ["LLM_API_KEY"]
+        if self._env_has("LLM_API_KEY"):
+            env["LLM_API_KEY"] = self._env_get("LLM_API_KEY", "")
         else:
-            model_name = self.model_name or os.environ.get("LLM_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+            model_name = self.model_name or self._env_get("LLM_MODEL") or self._env_get("ANTHROPIC_MODEL")
             if model_name:
                 for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]:
-                    if key in os.environ:
-                        env["LLM_API_KEY"] = os.environ[key]
+                    if self._env_has(key):
+                        env["LLM_API_KEY"] = self._env_get(key, "")
                         break
             if "LLM_API_KEY" not in env:
                 raise ValueError("LLM_API_KEY not set and could not infer provider key")
         if self.model_name:
             env["LLM_MODEL"] = self.model_name
-        elif "LLM_MODEL" in os.environ:
-            env["LLM_MODEL"] = os.environ["LLM_MODEL"]
-        elif "ANTHROPIC_MODEL" in os.environ:
-            env["LLM_MODEL"] = os.environ["ANTHROPIC_MODEL"]
+        elif self._env_has("LLM_MODEL"):
+            env["LLM_MODEL"] = self._env_get("LLM_MODEL", "")
+        elif self._env_has("ANTHROPIC_MODEL"):
+            env["LLM_MODEL"] = self._env_get("ANTHROPIC_MODEL", "")
         else:
             raise ValueError("LLM_MODEL is required for OpenHands")
-        if "LLM_BASE_URL" in os.environ:
-            env["LLM_BASE_URL"] = os.environ["LLM_BASE_URL"]
-        if "LLM_API_VERSION" in os.environ:
-            env["LLM_API_VERSION"] = os.environ["LLM_API_VERSION"]
+        if self._env_has("LLM_BASE_URL"):
+            env["LLM_BASE_URL"] = self._env_get("LLM_BASE_URL", "")
+        if self._env_has("LLM_API_VERSION"):
+            env["LLM_API_VERSION"] = self._env_get("LLM_API_VERSION", "")
         if self._reasoning_effort is not None:
             env["LLM_REASONING_EFFORT"] = str(self._reasoning_effort)
         env["AGENT_ENABLE_PROMPT_EXTENSIONS"] = "false"
@@ -82,7 +81,7 @@ class OpenHandsAdapter(BaseInstalledAdapter):
         env["LLM_LOG_COMPLETIONS_FOLDER"] = "/logs/agent/completions/"
         if self._disable_tool_calls:
             env["LLM_NATIVE_TOOL_CALLING"] = "false"
-        for key, value in os.environ.items():
+        for key, value in self._env_items():
             if key.startswith("OPENHANDS_"):
                 env[key.replace("OPENHANDS_", "")] = value
         cmd = (

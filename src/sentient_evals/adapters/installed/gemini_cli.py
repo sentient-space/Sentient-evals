@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -31,8 +30,8 @@ class GeminiCliAdapter(BaseInstalledAdapter):
             "GOOGLE_API_KEY",
         ]
         for var in auth_vars:
-            if var in os.environ:
-                env[var] = os.environ[var]
+            if self._env_has(var):
+                env[var] = self._env_get(var, "")
         return [
             ExecCommand(
                 cmd=(

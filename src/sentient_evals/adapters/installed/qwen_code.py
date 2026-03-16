@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -24,18 +23,18 @@ class QwenCodeAdapter(BaseInstalledAdapter):
         env: dict[str, str] = {}
         if self._api_key:
             env["OPENAI_API_KEY"] = self._api_key
-        elif "OPENAI_API_KEY" in os.environ:
-            env["OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY"]
+        elif self._env_has("OPENAI_API_KEY"):
+            env["OPENAI_API_KEY"] = self._env_get("OPENAI_API_KEY", "")
         if self.model_name:
             env["OPENAI_MODEL"] = self.model_name
-        elif "OPENAI_MODEL" in os.environ:
-            env["OPENAI_MODEL"] = os.environ["OPENAI_MODEL"]
+        elif self._env_has("OPENAI_MODEL"):
+            env["OPENAI_MODEL"] = self._env_get("OPENAI_MODEL", "")
         else:
             env["OPENAI_MODEL"] = "qwen3-coder-plus"
         if self._base_url:
             env["OPENAI_BASE_URL"] = self._base_url
-        elif "OPENAI_BASE_URL" in os.environ:
-            env["OPENAI_BASE_URL"] = os.environ["OPENAI_BASE_URL"]
+        elif self._env_has("OPENAI_BASE_URL"):
+            env["OPENAI_BASE_URL"] = self._env_get("OPENAI_BASE_URL", "")
         return [
             ExecCommand(
                 cmd=f"echo {escaped_instruction} | qwen -y 2>&1 | tee /logs/agent/qwen-code.txt",

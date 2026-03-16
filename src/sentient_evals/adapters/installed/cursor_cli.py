@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -19,9 +18,9 @@ class CursorCliAdapter(BaseInstalledAdapter):
         if not self.model_name:
             raise ValueError("model_name is required")
         model = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
-        if "CURSOR_API_KEY" not in os.environ:
+        if not self._env_has("CURSOR_API_KEY"):
             raise ValueError("CURSOR_API_KEY environment variable is required")
-        env = {"CURSOR_API_KEY": os.environ["CURSOR_API_KEY"]}
+        env = {"CURSOR_API_KEY": self._env_get("CURSOR_API_KEY", "")}
         return [
             ExecCommand(
                 cmd=(

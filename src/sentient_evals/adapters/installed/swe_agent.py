@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from pathlib import Path
 
@@ -27,8 +26,8 @@ class SweAgentAdapter(BaseInstalledAdapter):
             "TOGETHER_API_KEY",
             "SWEAGENT_CONFIG",
         ]:
-            if key in os.environ:
-                env[key] = os.environ[key]
+            if self._env_has(key):
+                env[key] = self._env_get(key, "")
         instruction_path = "/logs/agent/problem_statement.md"
         heredoc = f"SENTIENT_INSTRUCTION_{uuid.uuid4().hex}"
         write_instruction_cmd = (

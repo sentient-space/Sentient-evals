@@ -101,6 +101,16 @@ def _adapter_name(params: SandboxCreateParams) -> str | None:
     return value or None
 
 
+def _provider_api_key(params: SandboxCreateParams) -> str | None:
+    options = params.provider_options or {}
+    explicit = options.get("api_key")
+    if isinstance(explicit, str):
+        normalized = _normalize_api_key(explicit)
+        if normalized:
+            return normalized
+    return _normalize_api_key(os.environ.get("E2B_API_KEY"))
+
+
 def _claude_template_build_memory_mb() -> int:
     raw = os.environ.get("SENTIENT_E2B_CLAUDE_TEMPLATE_BUILD_MEMORY_MB", "").strip()
     if raw:
@@ -129,9 +139,7 @@ class E2BProvider(CloudSandboxProvider):
         template = await self._resolve_template(params)
         timeout = self._default_sandbox_timeout_sec
         allow_internet = not bool(params.network_block_all)
-        api_key = _normalize_api_key(os.environ.get("E2B_API_KEY"))
-        if api_key:
-            os.environ["E2B_API_KEY"] = api_key
+        api_key = _provider_api_key(params)
 
         create_kwargs: dict[str, Any] = {
             "timeout": timeout,

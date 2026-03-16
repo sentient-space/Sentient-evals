@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,11 +45,26 @@ class BaseInstalledAdapter:
         model_name: str | None = None,
         install_timeout_s: float | None = None,
         run_timeout_s: float | None = None,
+        env_overrides: dict[str, str] | None = None,
     ) -> None:
         self.version = version
         self.model_name = model_name
         self.install_timeout_s = install_timeout_s
         self.run_timeout_s = run_timeout_s
+        self._env_overrides = dict(env_overrides or {})
+
+    def _env_get(self, key: str, default: str | None = None) -> str | None:
+        if key in self._env_overrides:
+            return self._env_overrides[key]
+        return os.environ.get(key, default)
+
+    def _env_has(self, key: str) -> bool:
+        return key in self._env_overrides or key in os.environ
+
+    def _env_items(self) -> Sequence[tuple[str, str]]:
+        merged = dict(os.environ)
+        merged.update(self._env_overrides)
+        return tuple(merged.items())
 
     @property
     def install_template_path(self) -> Path:

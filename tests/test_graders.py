@@ -5,6 +5,8 @@ from sentient_evals.artifacts import TrialArtifacts
 from sentient_evals.env import LocalToolExecutor
 from sentient_evals.graders import (
     BudgetGrader,
+    LLMJudgeConfig,
+    LLMJudgeGrader,
     StateCheckGrader,
     StaticAnalysisGrader,
     StaticAnalysisSpec,
@@ -14,6 +16,7 @@ from sentient_evals.graders import (
     VerifierScriptSpec,
 )
 from sentient_evals.models import Task, ToolCall, TranscriptEvent
+from sentient_evals.judges import JudgeResponse
 
 
 def test_state_check_grader_passes():
@@ -77,3 +80,26 @@ def test_budget_grader_detects_missing_metrics():
         grader.grade(task=Task(id="t1"), transcript=[], outcome={}, artifacts=TrialArtifacts(Path(".")))
     )
     assert result.passed is False
+
+
+class _FakeJudgeClient:
+    async def score(self, *, model: str, prompt: str, max_tokens: int, temperature: float) -> JudgeResponse:
+        return JudgeResponse(content='{"verdict":"pass","score":1.0,"reason":"ok"}', raw={"model": model})
+
+
+def test_llm_judge_grader_supports_injected_client_without_env(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    grader = LLMJudgeGrader(
+        rubric="Check answer",
+        config=LLMJudgeConfig(model="gpt-4o-mini"),
+        client=_FakeJudgeClient(),
+    )
+    result = asyncio.run(
+        grader.grade(
+            task=Task(id="t1"),
+            transcript=[],
+            outcome={"answer": "ok"},
+            artifacts=TrialArtifacts(tmp_path),
+        )
+    )
+    assert result.passed is True
