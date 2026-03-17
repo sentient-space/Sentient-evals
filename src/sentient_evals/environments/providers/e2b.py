@@ -111,6 +111,13 @@ def _provider_api_key(params: SandboxCreateParams) -> str | None:
     return _normalize_api_key(os.environ.get("E2B_API_KEY"))
 
 
+def _template_api_kwargs(params: SandboxCreateParams) -> dict[str, str]:
+    api_key = _provider_api_key(params)
+    if not api_key:
+        return {}
+    return {"api_key": api_key}
+
+
 def _claude_template_build_memory_mb() -> int:
     raw = os.environ.get("SENTIENT_E2B_CLAUDE_TEMPLATE_BUILD_MEMORY_MB", "").strip()
     if raw:
@@ -362,7 +369,7 @@ class E2BProvider(CloudSandboxProvider):
             )
 
         alias = self._claude_augmented_template_alias(params, source_image=source_image)
-        exists = await self._template_alias_exists(async_template_cls, alias)
+        exists = await self._template_alias_exists(async_template_cls, alias, params=params)
         if params.force_build or not exists:
             template = self._create_claude_augmented_template_definition(
                 template_cls,
@@ -381,7 +388,11 @@ class E2BProvider(CloudSandboxProvider):
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
             if "memory_mb" not in build_kwargs:
                 build_kwargs["memory_mb"] = default_memory_mb
-            await self._invoke(async_template_cls.build, **build_kwargs)
+            await self._invoke(
+                async_template_cls.build,
+                **build_kwargs,
+                **_template_api_kwargs(params),
+            )
         return alias
 
     def _claude_augmented_template_alias(
@@ -465,7 +476,7 @@ class E2BProvider(CloudSandboxProvider):
             )
 
         alias = self._template_alias(params, source_image=source_image)
-        exists = await self._template_alias_exists(async_template_cls, alias)
+        exists = await self._template_alias_exists(async_template_cls, alias, params=params)
         if params.force_build or not exists:
             template = self._create_template_definition(
                 template_cls,
@@ -482,7 +493,11 @@ class E2BProvider(CloudSandboxProvider):
                     build_kwargs["cpu_count"] = params.resources.cpus
                 if params.resources.memory_mb is not None:
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
-            await self._invoke(async_template_cls.build, **build_kwargs)
+            await self._invoke(
+                async_template_cls.build,
+                **build_kwargs,
+                **_template_api_kwargs(params),
+            )
         return alias
 
     def _template_alias(self, params: SandboxCreateParams, *, source_image: str | None) -> str:
@@ -547,12 +562,18 @@ class E2BProvider(CloudSandboxProvider):
             return None
         return username, password
 
-    async def _template_alias_exists(self, async_template_cls: Any, alias: str) -> bool:
+    async def _template_alias_exists(
+        self,
+        async_template_cls: Any,
+        alias: str,
+        *,
+        params: SandboxCreateParams,
+    ) -> bool:
         alias_exists = getattr(async_template_cls, "alias_exists", None)
         if not callable(alias_exists):
             return False
         try:
-            return bool(await self._invoke(alias_exists, alias))
+            return bool(await self._invoke(alias_exists, alias, **_template_api_kwargs(params)))
         except Exception:
             return False
 

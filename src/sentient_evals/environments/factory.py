@@ -140,6 +140,7 @@ class EnvironmentFactory:
                 cidr_allowlist=modal_cidr_allowlist,
                 allow_network_override=modal_allow_network,
                 workdir=container_workdir,
+                provider_options=provider_options,
             )
 
         raise ValueError(f"Unsupported environment type: {env_type}")

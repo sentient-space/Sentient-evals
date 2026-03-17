@@ -46,6 +46,7 @@ class ModalEnvironment(CloudSandboxEnvironment):
         cidr_allowlist: tuple[str, ...] = (),
         allow_network_override: bool = False,
         workdir: str | None = None,
+        provider_options: dict[str, Any] | None = None,
     ):
         dockerfile = None
         if environment_dir is not None:
@@ -64,18 +65,23 @@ class ModalEnvironment(CloudSandboxEnvironment):
         if allow_network_override:
             block_network = False
 
+        merged_provider_options = dict(provider_options or {})
+        merged_provider_options.update(
+            {
+                "app_name": app_name,
+                "secret_names": tuple(secret_names),
+                "volumes": _parse_modal_volume_specs(tuple(volume_specs)),
+                "cidr_allowlist": tuple(cidr_allowlist),
+            }
+        )
+
         params = SandboxCreateParams(
             image=image,
             snapshot=None,
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
-            provider_options={
-                "app_name": app_name,
-                "secret_names": tuple(secret_names),
-                "volumes": _parse_modal_volume_specs(tuple(volume_specs)),
-                "cidr_allowlist": tuple(cidr_allowlist),
-            },
+            provider_options=merged_provider_options or None,
             network_block_all=block_network,
             build_timeout_sec=config.build_timeout_sec,
         )
