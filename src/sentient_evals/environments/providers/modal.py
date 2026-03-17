@@ -48,6 +48,14 @@ class ModalProvider(CloudSandboxProvider):
 
         app_name = str(options.get("app_name") or self._default_app_name)
         secret_names = tuple(str(v) for v in options.get("secret_names", ()))
+        sandbox_secret_env = self._normalize_env_mapping(
+            options.get("sandbox_secret_env"),
+            option_name="sandbox_secret_env",
+        )
+        sandbox_env = self._normalize_env_mapping(
+            options.get("sandbox_env"),
+            option_name="sandbox_env",
+        )
         cidr_allowlist = tuple(str(v) for v in options.get("cidr_allowlist", ()))
         volumes = options.get("volumes", {})
         if not isinstance(volumes, dict):
@@ -76,8 +84,15 @@ class ModalProvider(CloudSandboxProvider):
             create_kwargs["block_network"] = bool(params.network_block_all)
         if cidr_allowlist:
             create_kwargs["cidr_allowlist"] = list(cidr_allowlist)
+        secrets: list[Any] = []
         if secret_names:
-            create_kwargs["secrets"] = [modal.Secret.from_name(name) for name in secret_names]
+            secrets.extend(modal.Secret.from_name(name) for name in secret_names)
+        if sandbox_secret_env:
+            secrets.append(modal.Secret.from_dict(sandbox_secret_env))
+        if secrets:
+            create_kwargs["secrets"] = secrets
+        if sandbox_env:
+            create_kwargs["env"] = sandbox_env
         if volumes:
             create_kwargs["volumes"] = {
                 str(mount): modal.Volume.from_name(str(vol_name), create_if_missing=True)
@@ -220,6 +235,20 @@ class ModalProvider(CloudSandboxProvider):
                 "Modal private ECR auth is missing required AWS keys: " + ", ".join(missing)
             )
         return modal.Secret.from_dict(secret_env)
+
+    @staticmethod
+    def _normalize_env_mapping(raw: Any, *, option_name: str) -> dict[str, str]:
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"Modal provider option '{option_name}' must be a dict of env vars")
+        normalized: dict[str, str] = {}
+        for key, value in raw.items():
+            env_key = str(key).strip()
+            if not env_key or value is None:
+                continue
+            normalized[env_key] = str(value)
+        return normalized
 
     @staticmethod
     def _modal_sdk():
