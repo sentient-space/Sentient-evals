@@ -117,14 +117,17 @@ class _FakeTemplateBuilder:
 class _FakeAsyncTemplate:
     aliases: set[str] = set()
     build_calls: list[dict[str, object]] = []
+    alias_exists_calls: list[dict[str, object]] = []
 
     @classmethod
     def reset(cls) -> None:
         cls.aliases = set()
         cls.build_calls = []
+        cls.alias_exists_calls = []
 
     @classmethod
-    def alias_exists(cls, alias: str) -> bool:
+    def alias_exists(cls, alias: str, **kwargs):
+        cls.alias_exists_calls.append({"alias": alias, **kwargs})
         return alias in cls.aliases
 
     @classmethod
@@ -161,6 +164,24 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
     result = await provider.exec(sandbox, "echo hello", cwd="/workspace", timeout_s=5)
     assert result.exit_code == 0
     assert "echo hello" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_prefers_explicit_api_key_over_process_env(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    monkeypatch.setenv("E2B_API_KEY", "process-key")
+    provider = E2BProvider()
+
+    sandbox = await provider.create(
+        SandboxCreateParams(
+            image="template-123",
+            provider_options={"api_key": "explicit-key"},
+        )
+    )
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeSandboxClass.last_kwargs is not None
+    assert _FakeSandboxClass.last_kwargs["api_key"] == "explicit-key"
 
 
 @pytest.mark.asyncio
@@ -245,6 +266,7 @@ async def test_e2b_provider_builds_template_from_docker_image(monkeypatch):
     assert isinstance(alias, str)
     assert alias.startswith("sentient-e2b-")
     assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.alias_exists_calls
     assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "image"
 
 
@@ -268,7 +290,32 @@ async def test_e2b_provider_builds_template_from_dockerfile(monkeypatch, tmp_pat
     assert isinstance(alias, str)
     assert alias.startswith("sentient-e2b-")
     assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.alias_exists_calls
     assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "dockerfile"
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_passes_explicit_api_key_to_template_apis(monkeypatch):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_FakeTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    provider = E2BProvider()
+    sandbox = await provider.create(
+        SandboxCreateParams(
+            image="python:3.11-slim",
+            provider_options={"api_key": "explicit-key"},
+        )
+    )
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeAsyncTemplate.alias_exists_calls
+    assert _FakeAsyncTemplate.alias_exists_calls[0]["api_key"] == "explicit-key"
+    assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.build_calls[0]["api_key"] == "explicit-key"
 
 
 @pytest.mark.asyncio

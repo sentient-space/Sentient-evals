@@ -48,6 +48,14 @@ class ModalProvider(CloudSandboxProvider):
 
         app_name = str(options.get("app_name") or self._default_app_name)
         secret_names = tuple(str(v) for v in options.get("secret_names", ()))
+        sandbox_secret_env = self._normalize_env_mapping(
+            options.get("sandbox_secret_env"),
+            option_name="sandbox_secret_env",
+        )
+        sandbox_env = self._normalize_env_mapping(
+            options.get("sandbox_env"),
+            option_name="sandbox_env",
+        )
         cidr_allowlist = tuple(str(v) for v in options.get("cidr_allowlist", ()))
         volumes = options.get("volumes", {})
         if not isinstance(volumes, dict):
@@ -76,8 +84,15 @@ class ModalProvider(CloudSandboxProvider):
             create_kwargs["block_network"] = bool(params.network_block_all)
         if cidr_allowlist:
             create_kwargs["cidr_allowlist"] = list(cidr_allowlist)
+        secrets: list[Any] = []
         if secret_names:
-            create_kwargs["secrets"] = [modal.Secret.from_name(name) for name in secret_names]
+            secrets.extend(modal.Secret.from_name(name) for name in secret_names)
+        if sandbox_secret_env:
+            secrets.append(modal.Secret.from_dict(sandbox_secret_env))
+        if secrets:
+            create_kwargs["secrets"] = secrets
+        if sandbox_env:
+            create_kwargs["env"] = sandbox_env
         if volumes:
             create_kwargs["volumes"] = {
                 str(mount): modal.Volume.from_name(str(vol_name), create_if_missing=True)
@@ -175,6 +190,7 @@ class ModalProvider(CloudSandboxProvider):
                 await self.download_file(sandbox, remote_path, local_path)
 
     def _resolve_image(self, modal: Any, params: SandboxCreateParams) -> Any:
+        options = params.provider_options or {}
         if params.dockerfile is not None:
             if params.context_dir is not None:
                 return modal.Image.from_dockerfile(
@@ -183,8 +199,56 @@ class ModalProvider(CloudSandboxProvider):
                 )
             return modal.Image.from_dockerfile(str(params.dockerfile))
         if params.image:
+            ecr_secret = self._resolve_aws_ecr_secret(modal, str(params.image), options)
+            if ecr_secret is not None:
+                return modal.Image.from_aws_ecr(str(params.image), secret=ecr_secret)
             return modal.Image.from_registry(params.image)
         return modal.Image.debian_slim()
+
+    @staticmethod
+    def _resolve_aws_ecr_secret(modal: Any, image: str, options: dict[str, Any]) -> Any | None:
+        if ".dkr.ecr." not in image or ".amazonaws.com/" not in image:
+            return None
+
+        secret_name = options.get("aws_ecr_secret_name")
+        if isinstance(secret_name, str) and secret_name.strip():
+            return modal.Secret.from_name(secret_name.strip())
+
+        raw_secret_env = options.get("aws_ecr_secret_env")
+        if raw_secret_env is None:
+            raise RuntimeError(
+                "Modal private ECR images require provider_options['aws_ecr_secret_env'] "
+                "or provider_options['aws_ecr_secret_name']."
+            )
+        if not isinstance(raw_secret_env, dict):
+            raise ValueError("Modal provider option 'aws_ecr_secret_env' must be a dict of AWS credential env vars")
+
+        secret_env = {
+            str(key): str(value).strip()
+            for key, value in raw_secret_env.items()
+            if str(key).strip() and value is not None and str(value).strip()
+        }
+        required = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION")
+        missing = [key for key in required if not secret_env.get(key)]
+        if missing:
+            raise RuntimeError(
+                "Modal private ECR auth is missing required AWS keys: " + ", ".join(missing)
+            )
+        return modal.Secret.from_dict(secret_env)
+
+    @staticmethod
+    def _normalize_env_mapping(raw: Any, *, option_name: str) -> dict[str, str]:
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"Modal provider option '{option_name}' must be a dict of env vars")
+        normalized: dict[str, str] = {}
+        for key, value in raw.items():
+            env_key = str(key).strip()
+            if not env_key or value is None:
+                continue
+            normalized[env_key] = str(value)
+        return normalized
 
     @staticmethod
     def _modal_sdk():

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -25,8 +24,8 @@ class MiniSweAgentAdapter(BaseInstalledAdapter):
         if not self.model_name or "/" not in self.model_name:
             raise ValueError("model_name must be in format provider/model_name")
         env = {"MSWEA_CONFIGURED": "true"}
-        if "MSWEA_API_KEY" in os.environ:
-            env["MSWEA_API_KEY"] = os.environ["MSWEA_API_KEY"]
+        if self._env_has("MSWEA_API_KEY"):
+            env["MSWEA_API_KEY"] = self._env_get("MSWEA_API_KEY", "")
         else:
             for key in [
                 "OPENAI_API_KEY",
@@ -34,11 +33,11 @@ class MiniSweAgentAdapter(BaseInstalledAdapter):
                 "GOOGLE_API_KEY",
                 "GEMINI_API_KEY",
             ]:
-                if key in os.environ:
-                    env["MSWEA_API_KEY"] = os.environ[key]
+                if self._env_has(key):
+                    env["MSWEA_API_KEY"] = self._env_get(key, "")
                     break
-        if "OPENAI_API_BASE" in os.environ:
-            env["OPENAI_API_BASE"] = os.environ["OPENAI_API_BASE"]
+        if self._env_has("OPENAI_API_BASE"):
+            env["OPENAI_API_BASE"] = self._env_get("OPENAI_API_BASE", "")
         return [
             ExecCommand(
                 cmd=(

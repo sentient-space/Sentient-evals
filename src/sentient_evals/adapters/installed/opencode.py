@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -58,8 +57,8 @@ class OpenCodeAdapter(BaseInstalledAdapter):
             raise ValueError(f"Unknown provider {provider}")
         env: dict[str, str] = {}
         for key in keys:
-            if key in os.environ:
-                env[key] = os.environ[key]
+            if self._env_has(key):
+                env[key] = self._env_get(key, "")
         env["OPENCODE_FAKE_VCS"] = "git"
         return [
             ExecCommand(

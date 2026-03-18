@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 
@@ -19,11 +18,11 @@ class ClineCliAdapter(BaseInstalledAdapter):
         if not self.model_name or ":" not in self.model_name:
             raise ValueError("model_name must be in format provider:model-id")
         provider, model = self.model_name.split(":", 1)
-        if "API_KEY" not in os.environ:
+        if not self._env_has("API_KEY"):
             raise ValueError("API_KEY environment variable is required")
         env = {
             "PROVIDER": provider,
-            "API_KEY": os.environ["API_KEY"],
+            "API_KEY": self._env_get("API_KEY", ""),
             "MODELID": model,
         }
         valid_providers = [
@@ -46,10 +45,10 @@ class ClineCliAdapter(BaseInstalledAdapter):
             raise ValueError(f"Invalid provider: {provider}")
         base_url = ""
         if provider == "openai":
-            if "BASE_URL" not in os.environ:
+            if not self._env_has("BASE_URL"):
                 raise ValueError("BASE_URL is required for openai provider")
-            env["BASE_URL"] = os.environ["BASE_URL"]
-            base_url = os.environ["BASE_URL"]
+            env["BASE_URL"] = self._env_get("BASE_URL", "")
+            base_url = env["BASE_URL"]
         setup_config_cmd = ExecCommand(
             cmd=(
                 "mkdir -p ~/.cline/data && "

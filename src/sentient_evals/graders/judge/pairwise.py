@@ -39,16 +39,6 @@ class PairwiseJudgeGrader:
                 details={"error": "PairwiseJudgeGrader requires config"},
             )
 
-        api_key = os.getenv(self.config.api_key_env)
-        if not api_key:
-            return GraderResult(
-                name=self.name,
-                score=0.0,
-                passed=False,
-                severity=Severity.error,
-                details={"error": f"Missing API key env var: {self.config.api_key_env}"},
-            )
-
         if not isinstance(outcome, dict):
             return GraderResult(
                 name=self.name,
@@ -71,7 +61,18 @@ class PairwiseJudgeGrader:
         )
         artifacts.judge().write_text("prompt.txt", prompt)
 
-        client = self.client or LiteLLMJudgeClient()
+        client = self.client
+        if client is None:
+            api_key = os.getenv(self.config.api_key_env)
+            if not api_key:
+                return GraderResult(
+                    name=self.name,
+                    score=0.0,
+                    passed=False,
+                    severity=Severity.error,
+                    details={"error": f"Missing API key env var: {self.config.api_key_env}"},
+                )
+            client = LiteLLMJudgeClient(api_key=api_key)
         try:
             resp = await client.score(
                 model=self.config.model,

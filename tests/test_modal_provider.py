@@ -177,6 +177,11 @@ def _build_fake_modal():
             return ("registry-image", image)
 
         @staticmethod
+        def from_aws_ecr(image: str, secret):
+            state["image_call"] = ("aws_ecr", image, secret)
+            return ("aws-ecr-image", image, secret)
+
+        @staticmethod
         def debian_slim():
             state["image_call"] = ("debian_slim",)
             return ("debian-image",)
@@ -185,6 +190,10 @@ def _build_fake_modal():
         @staticmethod
         def from_name(name: str):
             return f"secret:{name}"
+
+        @staticmethod
+        def from_dict(values: dict[str, str]):
+            return ("secret-dict", dict(values))
 
     class Volume:
         @staticmethod
@@ -230,6 +239,8 @@ async def test_modal_provider_create_with_dockerfile_and_options(monkeypatch, tm
             provider_options={
                 "app_name": "sentient-app",
                 "secret_names": ("service-secret",),
+                "sandbox_secret_env": {"GOOGLE_API_KEY": "secret-value"},
+                "sandbox_env": {"SENTIENT_TRACING_ENABLED": "false"},
                 "volumes": {"/cache": "cache-vol"},
                 "cidr_allowlist": ("10.0.0.0/8",),
             },
@@ -245,7 +256,11 @@ async def test_modal_provider_create_with_dockerfile_and_options(monkeypatch, tm
     assert kwargs["gpu"] == "any:1"
     assert kwargs["block_network"] is True
     assert kwargs["cidr_allowlist"] == ["10.0.0.0/8"]
-    assert kwargs["secrets"] == ["secret:service-secret"]
+    assert kwargs["secrets"] == [
+        "secret:service-secret",
+        ("secret-dict", {"GOOGLE_API_KEY": "secret-value"}),
+    ]
+    assert kwargs["env"] == {"SENTIENT_TRACING_ENABLED": "false"}
     assert kwargs["volumes"]["/cache"] == "volume:cache-vol:True"
     assert kwargs["timeout"] == 86_400
 
@@ -259,6 +274,69 @@ async def test_modal_provider_image_selection(monkeypatch):
 
     await provider.create(SandboxCreateParams())
     assert fake_modal._state["image_call"] == ("debian_slim",)
+
+
+@pytest.mark.asyncio
+async def test_modal_provider_uses_explicit_aws_ecr_secret_env(monkeypatch):
+    provider, fake_modal = _provider_with_fake_modal(monkeypatch)
+
+    await provider.create(
+        SandboxCreateParams(
+            image="123456789012.dkr.ecr.us-east-1.amazonaws.com/private:latest",
+            provider_options={
+                "aws_ecr_secret_env": {
+                    "AWS_ACCESS_KEY_ID": "key",
+                    "AWS_SECRET_ACCESS_KEY": "secret",
+                    "AWS_REGION": "us-east-1",
+                    "AWS_SESSION_TOKEN": "token",
+                }
+            },
+        )
+    )
+
+    assert fake_modal._state["image_call"] == (
+        "aws_ecr",
+        "123456789012.dkr.ecr.us-east-1.amazonaws.com/private:latest",
+        (
+            "secret-dict",
+            {
+                "AWS_ACCESS_KEY_ID": "key",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "AWS_REGION": "us-east-1",
+                "AWS_SESSION_TOKEN": "token",
+            },
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_modal_provider_uses_named_aws_ecr_secret(monkeypatch):
+    provider, fake_modal = _provider_with_fake_modal(monkeypatch)
+
+    await provider.create(
+        SandboxCreateParams(
+            image="123456789012.dkr.ecr.us-east-1.amazonaws.com/private:latest",
+            provider_options={"aws_ecr_secret_name": "aws-ecr"},
+        )
+    )
+
+    assert fake_modal._state["image_call"] == (
+        "aws_ecr",
+        "123456789012.dkr.ecr.us-east-1.amazonaws.com/private:latest",
+        "secret:aws-ecr",
+    )
+
+
+@pytest.mark.asyncio
+async def test_modal_provider_requires_explicit_ecr_auth(monkeypatch):
+    provider, _fake_modal = _provider_with_fake_modal(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="aws_ecr_secret_env"):
+        await provider.create(
+            SandboxCreateParams(
+                image="123456789012.dkr.ecr.us-east-1.amazonaws.com/private:latest",
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -283,6 +361,14 @@ async def test_modal_provider_exec_wraps_cwd_env(monkeypatch):
     assert "cd /workspace" in wrapped
     assert "export API_KEY='abc 123'" in wrapped
     assert "echo hello" in wrapped
+
+
+@pytest.mark.asyncio
+async def test_modal_provider_rejects_invalid_inline_env(monkeypatch):
+    provider, _fake_modal = _provider_with_fake_modal(monkeypatch)
+
+    with pytest.raises(ValueError, match="sandbox_secret_env"):
+        await provider.create(SandboxCreateParams(provider_options={"sandbox_secret_env": "bad"}))
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from sentient_evals.adapters.installed.aider import AiderAdapter
 from sentient_evals.adapters.installed.base import BaseInstalledAdapter, ExecCommand
 from sentient_evals.artifacts import TrialArtifacts
 from sentient_evals.env import ExecResult
@@ -80,3 +81,10 @@ def test_installed_adapter_run_writes_artifacts(tmp_path: Path):
     assert isinstance(transcript, list)
     assert (tmp_path / "agent" / "install.sh").exists()
     assert (tmp_path / "agent" / "commands" / "0" / "stdout.txt").exists()
+
+
+def test_installed_adapter_env_overrides_do_not_require_process_env(tmp_path: Path):
+    adapter = AiderAdapter(model_name="openai/gpt-4o-mini", env_overrides={"OPENAI_API_KEY": "test-key"})
+    commands = adapter.create_run_commands("solve it", task=Task(id="t1"), seed=1)
+    assert commands
+    assert commands[0].env == {"AIDER_API_KEY": "openai=test-key"}

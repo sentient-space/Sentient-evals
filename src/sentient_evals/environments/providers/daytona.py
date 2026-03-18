@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -11,50 +10,6 @@ from typing import Any, Iterable
 from sentient_evals.env import ExecResult
 
 from .base import CloudSandboxProvider, SandboxCapabilities, SandboxCreateParams, SandboxResources
-
-
-class _DaytonaClientManager:
-    _instance: "_DaytonaClientManager | None" = None
-    _lock = asyncio.Lock()
-
-    def __init__(self) -> None:
-        self._client: Any | None = None
-        self._client_lock = asyncio.Lock()
-        self._cleanup_registered = False
-
-    @classmethod
-    async def instance(cls) -> "_DaytonaClientManager":
-        if cls._instance is None:
-            async with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    async def get(self) -> Any:
-        async with self._client_lock:
-            if self._client is None:
-                from daytona import AsyncDaytona  
-
-                self._client = AsyncDaytona()
-                if not self._cleanup_registered:
-                    atexit.register(self._cleanup_sync)
-                    self._cleanup_registered = True
-            return self._client
-
-    def _cleanup_sync(self) -> None:
-        try:
-            asyncio.run(self._cleanup())
-        except Exception:
-            pass
-
-    async def _cleanup(self) -> None:
-        async with self._client_lock:
-            if self._client is not None:
-                try:
-                    await self._client.close()
-                except Exception:
-                    pass
-                self._client = None
 
 
 @dataclass(frozen=True)
@@ -95,82 +50,126 @@ class DaytonaProvider(CloudSandboxProvider):
         max_upload_batch=200,
     )
 
+    def __init__(self) -> None:
+        self._sandbox_clients: dict[int, Any] = {}
+
+    @staticmethod
+    def _client_options(params: SandboxCreateParams) -> dict[str, str]:
+        options = params.provider_options or {}
+        client: dict[str, str] = {}
+        for source_key, target_key in (
+            ("api_key", "api_key"),
+            ("api_url", "api_url"),
+            ("target", "target"),
+            ("organization_id", "organization_id"),
+            ("jwt_token", "jwt_token"),
+        ):
+            raw = options.get(source_key)
+            if isinstance(raw, str) and raw.strip():
+                client[target_key] = raw.strip()
+        return client
+
     async def create(self, params: SandboxCreateParams) -> Any:
         from daytona import (  
+            AsyncDaytona,
             CreateSandboxFromImageParams,
             CreateSandboxFromSnapshotParams,
+            DaytonaConfig,
             Image,
             Resources,
         )
-
-        mgr = await _DaytonaClientManager.instance()
-        daytona = await mgr.get()
+        client_options = self._client_options(params)
+        if client_options:
+            daytona = AsyncDaytona(DaytonaConfig(**client_options))
+        else:
+            daytona = AsyncDaytona()
 
         snapshot = params.snapshot
-        if snapshot and not params.force_build:
+        try:
+            if snapshot and not params.force_build:
+                try:
+                    sandbox = await daytona.create(
+                        CreateSandboxFromSnapshotParams(
+                            snapshot=snapshot,
+                            auto_delete_interval=0,
+                            auto_stop_interval=0,
+                            network_block_all=params.network_block_all,
+                        ),
+                        timeout=round(params.build_timeout_sec or 0),
+                    )
+                    self._sandbox_clients[id(sandbox)] = daytona
+                    return sandbox
+                except Exception:
+                    if params.dockerfile is None or params.context_dir is None:
+                        raise
+                    await self._create_snapshot(snapshot, params)
+                    sandbox = await daytona.create(
+                        CreateSandboxFromSnapshotParams(
+                            snapshot=snapshot,
+                            auto_delete_interval=0,
+                            auto_stop_interval=0,
+                            network_block_all=params.network_block_all,
+                        ),
+                        timeout=round(params.build_timeout_sec or 0),
+                    )
+                    self._sandbox_clients[id(sandbox)] = daytona
+                    return sandbox
+
+            if params.image is None and params.dockerfile is None:
+                raise RuntimeError(
+                    "Daytona provider requires snapshot, image, or dockerfile to create a sandbox."
+                )
+
+            image = params.image
+            if image is None and params.dockerfile is not None:
+                image = Image.from_dockerfile(params.dockerfile)
+
+            resources = None
+            if params.resources:
+                mem_gb = None
+                if params.resources.memory_mb is not None:
+                    mem_gb = max(1, int((int(params.resources.memory_mb) + 1023) / 1024))
+                resources = Resources(
+                    cpu=params.resources.cpus,
+                    memory=mem_gb,
+                    disk=None
+                    if params.resources.storage_mb is None
+                    else max(1, int((params.resources.storage_mb + 1023) / 1024)),
+                )
+
+            sandbox = await daytona.create(
+                CreateSandboxFromImageParams(
+                    image=image,
+                    resources=resources,
+                    auto_delete_interval=0,
+                    auto_stop_interval=0,
+                    network_block_all=params.network_block_all,
+                ),
+                timeout=round(params.build_timeout_sec or 0),
+            )
+            self._sandbox_clients[id(sandbox)] = daytona
+            return sandbox
+        except Exception:
             try:
-                return await daytona.create(
-                    CreateSandboxFromSnapshotParams(
-                        snapshot=snapshot,
-                        auto_delete_interval=0,
-                        auto_stop_interval=0,
-                        network_block_all=params.network_block_all,
-                    ),
-                    timeout=round(params.build_timeout_sec or 0),
-                )
+                await daytona.close()
             except Exception:
-                if params.dockerfile is None or params.context_dir is None:
-                    raise
-                await self._create_snapshot(snapshot, params)
-                return await daytona.create(
-                    CreateSandboxFromSnapshotParams(
-                        snapshot=snapshot,
-                        auto_delete_interval=0,
-                        auto_stop_interval=0,
-                        network_block_all=params.network_block_all,
-                    ),
-                    timeout=round(params.build_timeout_sec or 0),
-                )
-
-        if params.image is None and params.dockerfile is None:
-            raise RuntimeError(
-                "Daytona provider requires snapshot, image, or dockerfile to create a sandbox."
-            )
-
-        image = params.image
-        if image is None and params.dockerfile is not None:
-            image = Image.from_dockerfile(params.dockerfile)
-
-        resources = None
-        if params.resources:
-            mem_gb = None
-            if params.resources.memory_mb is not None:
-                mem_gb = max(1, int((int(params.resources.memory_mb) + 1023) / 1024))
-            resources = Resources(
-                cpu=params.resources.cpus,
-                memory=mem_gb,
-                disk=None if params.resources.storage_mb is None else max(1, int((params.resources.storage_mb + 1023) / 1024)),
-            )
-
-        return await daytona.create(
-            CreateSandboxFromImageParams(
-                image=image,
-                resources=resources,
-                auto_delete_interval=0,
-                auto_stop_interval=0,
-                network_block_all=params.network_block_all,
-            ),
-            timeout=round(params.build_timeout_sec or 0),
-        )
+                pass
+            raise
 
     async def delete(self, sandbox: Any) -> None:
-        await sandbox.delete()
+        try:
+            await sandbox.delete()
+        finally:
+            await self._close_client(sandbox)
 
     async def stop(self, sandbox: Any) -> None:
-        if hasattr(sandbox, "stop"):
-            await sandbox.stop()
-        else:
-            await sandbox.delete()
+        try:
+            if hasattr(sandbox, "stop"):
+                await sandbox.stop()
+            else:
+                await sandbox.delete()
+        finally:
+            await self._close_client(sandbox)
 
     async def exec(
         self,
@@ -256,3 +255,12 @@ class DaytonaProvider(CloudSandboxProvider):
             str(params.context_dir),
         ]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    async def _close_client(self, sandbox: Any) -> None:
+        client = self._sandbox_clients.pop(id(sandbox), None)
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:
+            pass
