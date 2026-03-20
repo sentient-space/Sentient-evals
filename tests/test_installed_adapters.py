@@ -3,6 +3,7 @@ from pathlib import Path
 
 from sentient_evals.adapters.installed.aider import AiderAdapter
 from sentient_evals.adapters.installed.base import BaseInstalledAdapter, ExecCommand
+from sentient_evals.adapters.installed.codex import CodexAdapter
 from sentient_evals.artifacts import TrialArtifacts
 from sentient_evals.env import ExecResult
 from sentient_evals.models import Outcome, Task

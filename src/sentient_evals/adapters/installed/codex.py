@@ -24,30 +24,19 @@ class CodexAdapter(BaseInstalledAdapter):
         if not self.model_name:
             raise ValueError("model_name is required")
         model = self.model_name.split("/")[-1]
+        api_key = self._env_get("OPENAI_API_KEY", "")
         if not self._env_has("OPENAI_API_KEY"):
             raise ValueError("codex adapter requires OPENAI_API_KEY environment variable")
         env = {
-            "OPENAI_API_KEY": self._env_get("OPENAI_API_KEY", ""),
+            "OPENAI_API_KEY": api_key,
+            "CODEX_API_KEY": api_key,
             "CODEX_HOME": "/logs/agent",
         }
         reasoning_effort = self._reasoning_effort
         reasoning_flag = f"-c model_reasoning_effort={reasoning_effort} " if reasoning_effort else ""
         return [
             ExecCommand(
-                cmd="""
-mkdir -p /tmp/codex-secrets
-cat >/tmp/codex-secrets/auth.json <<EOF
-{
-  "OPENAI_API_KEY": "${OPENAI_API_KEY}"
-}
-EOF
-ln -sf /tmp/codex-secrets/auth.json "$CODEX_HOME/auth.json"
-                """,
-                env=env,
-            ),
-            ExecCommand(
                 cmd=(
-                    "trap 'rm -rf /tmp/codex-secrets \"$CODEX_HOME/auth.json\"' EXIT TERM INT; "
                     "codex exec "
                     "--dangerously-bypass-approvals-and-sandbox "
                     "--skip-git-repo-check "
