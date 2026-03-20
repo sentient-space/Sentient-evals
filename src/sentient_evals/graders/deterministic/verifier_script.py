@@ -52,20 +52,6 @@ class VerifierScriptGrader:
             f"{_VERIFIER_CONTEXT_DIR}/task.json",
             json.dumps(task.model_dump(mode="json"), indent=2),
         )
-        await env.write_file(
-            f"{_VERIFIER_CONTEXT_DIR}/trajectory.json",
-            json.dumps(
-                [
-                    event.model_dump(mode="json") if hasattr(event, "model_dump") else event
-                    for event in transcript
-                ],
-                indent=2,
-            ),
-        )
-        await env.write_file(
-            f"{_VERIFIER_CONTEXT_DIR}/outcome.json",
-            json.dumps(outcome, indent=2),
-        )
         res = await env.exec(self.spec.cmd, timeout_s=self.spec.timeout_s)
         # If bash is unavailable in the environment, fall back to sh.
         if res.exit_code != 0 and "bash" in (res.stderr or "").lower() and "not found" in (res.stderr or "").lower():

@@ -74,15 +74,15 @@ def test_verifier_script_grader_reads_reward(tmp_path: Path):
     assert result.passed is True
 
 
-def test_verifier_script_grader_exports_task_and_trajectory_context(tmp_path: Path):
+def test_verifier_script_grader_exports_only_task_context(tmp_path: Path):
     env = LocalToolExecutor(root=tmp_path)
     spec = VerifierScriptSpec(
         cmd=(
             "sh -lc '"
             "mkdir -p logs/verifier && "
             "test -f .sentient_evals/task.json && "
-            "test -f .sentient_evals/trajectory.json && "
-            "test -f .sentient_evals/outcome.json && "
+            "test ! -f .sentient_evals/trajectory.json && "
+            "test ! -f .sentient_evals/outcome.json && "
             "echo 1 > logs/verifier/reward.txt'"
         ),
         reward_paths=("logs/verifier/reward.txt",),
@@ -111,6 +111,15 @@ def test_budget_grader_detects_missing_metrics():
 
 class _FakeJudgeClient:
     async def score(self, *, model: str, prompt: str, max_tokens: int, temperature: float) -> JudgeResponse:
+        return JudgeResponse(content='{"verdict":"pass","score":1.0,"reason":"ok"}', raw={"model": model})
+
+
+class _CapturingJudgeClient:
+    def __init__(self) -> None:
+        self.prompt: str | None = None
+
+    async def score(self, *, model: str, prompt: str, max_tokens: int, temperature: float) -> JudgeResponse:
+        self.prompt = prompt
         return JudgeResponse(content='{"verdict":"pass","score":1.0,"reason":"ok"}', raw={"model": model})
 
 

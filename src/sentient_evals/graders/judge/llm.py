@@ -27,6 +27,15 @@ class LLMJudgeGrader:
     config: LLMJudgeConfig | None = None
     client: JudgeClient | None = None
 
+    @staticmethod
+    def _judge_task_input(task: Task, transcript: Sequence[TranscriptEvent]) -> str:
+        if task.input:
+            return str(task.input)
+        for event in transcript:
+            if event.kind == "message" and event.role == "user" and (event.content or "").strip():
+                return str(event.content)
+        return ""
+
     async def grade(
         self, *, task: Task, transcript: Sequence[TranscriptEvent], outcome: Any, artifacts: TrialArtifacts
     ) -> GraderResult:
@@ -45,11 +54,12 @@ class LLMJudgeGrader:
             answer = str(outcome.get(self.answer_field, ""))
         else:
             answer = str(getattr(outcome, self.answer_field, "") if outcome is not None else "")
+        task_input = self._judge_task_input(task, transcript)
 
         prompt = (
             "You are a strict evaluator.\n\n"
             f"RUBRIC:\n{self.rubric}\n\n"
-            f"TASK INPUT:\n{task.input}\n\n"
+            f"TASK INPUT:\n{task_input}\n\n"
             + (f"REFERENCE:\n{self.reference}\n\n" if self.reference else "")
             + f"MODEL ANSWER:\n{answer}\n\n"
             "Return JSON with keys: verdict (pass|fail|unknown), score (0-1), reason (string)."
