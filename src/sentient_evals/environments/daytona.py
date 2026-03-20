@@ -44,13 +44,17 @@ class DaytonaEnvironment(CloudSandboxEnvironment):
             storage_mb=config.storage_mb,
             gpus=config.gpus,
         )
+        merged_provider_options = dict(provider_options or {})
+        if config.runtime_env:
+            merged_provider_options.setdefault("sandbox_env", dict(config.runtime_env))
+
         params = SandboxCreateParams(
             image=image,
             snapshot=snapshot_name,
             dockerfile=dockerfile,
             context_dir=environment_dir,
             resources=resources,
-            provider_options=dict(provider_options or {}) or None,
+            provider_options=merged_provider_options or None,
             network_block_all=network_block_all,
             build_timeout_sec=config.build_timeout_sec,
         )

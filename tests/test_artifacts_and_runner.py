@@ -5,6 +5,7 @@ from pathlib import Path
 from sentient_evals.artifacts import ArtifactWriter, TrialArtifacts
 from sentient_evals.env import ExecResult, ToolExecutor
 from sentient_evals.graders import ExactMatchGrader
+from sentient_evals.graders.deterministic.verifier_script import VerifierScriptGrader
 from sentient_evals.atif.converters import transcript_to_trajectory
 from sentient_evals.environments.base import EnvironmentType
 from sentient_evals.models import GraderResult, Outcome, SuiteConfig, Task, TranscriptEvent
@@ -349,3 +350,94 @@ def test_run_suite_bundles_cancel_stops_scheduling_pending_trials(tmp_path: Path
     assert len(results) == 1
     assert results[0].trial_id == "t1__0"
     assert results[0].error == "cancelled"
+
+
+class ReadsSetupArtifactAdapter:
+    name = "reads_setup_artifact"
+
+    async def run(self, task: Task, *, instruction: str | None, seed: int, env, artifacts):
+        res = await env.exec("python3 - <<'PY'\nfrom pathlib import Path\nprint(Path('setup_env.txt').read_text())\nPY")
+        return (
+            [TranscriptEvent(kind="message", role="user", content=task.id)],
+            Outcome(summary="ok", data={"answer": res.stdout.strip()}),
+        )
+
+
+def test_run_suite_bundles_runtime_env_and_hooks(tmp_path: Path):
+    task_dir = tmp_path / "tasks" / "t1"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text(
+        '\n'.join(
+            [
+                'id = "t1"',
+                "",
+                "[environment]",
+                'type = "local_python"',
+                "",
+                "[input]",
+                'q = "?"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "instruction.md").write_text("use setup output", encoding="utf-8")
+    (task_dir / "tests").mkdir(parents=True)
+    (task_dir / "tests" / "setup.sh").write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                "set -eu",
+                "printf '%s' \"$COMPOSIO_API_KEY\" > ./setup_env.txt",
+                "mkdir -p ./.sentient/composio",
+                "printf '%s' \"$SENTIENT_EVAL_TRIAL_ID\" > ./.sentient/composio/trial_id.txt",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "tests" / "test.sh").write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                "set -eu",
+                "mkdir -p logs/verifier",
+                "test \"$(cat ./setup_env.txt)\" = \"test-composio-key\"",
+                "test -n \"$(cat ./.sentient/composio/trial_id.txt)\"",
+                "echo 1 > logs/verifier/reward.txt",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "tests" / "cleanup.sh").write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                "set -eu",
+                "printf 'cleanup-ok' > cleanup.txt",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundles = load_task_bundles(task_dir.parent)
+    suite = SuiteConfig(id="s", trials_per_task=1, concurrency=1, seeds=[123])
+    cfg = RunConfig(
+        run_id="r1",
+        suite=suite,
+        jobs_dir=tmp_path,
+        adapter_name="reads_setup_artifact",
+        runtime_env={"COMPOSIO_API_KEY": "test-composio-key"},
+    )
+
+    results, _summary = asyncio.run(
+        run_suite_bundles(
+            bundles=bundles,
+            adapter=ReadsSetupArtifactAdapter(),
+            graders=[VerifierScriptGrader()],
+            cfg=cfg,
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert (tmp_path / "r1" / "trials" / "t1__0" / "workspace" / "cleanup.txt").read_text(encoding="utf-8") == "cleanup-ok"

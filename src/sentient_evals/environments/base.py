@@ -27,6 +27,7 @@ class EnvironmentConfig:
     gpus: int | None = None
     build_timeout_sec: float | None = None
     provider_concurrency: int | None = None
+    runtime_env: dict[str, str] | None = None
 
 
 class BaseEnvironment(ABC):

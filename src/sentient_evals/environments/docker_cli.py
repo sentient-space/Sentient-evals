@@ -204,8 +204,11 @@ class DockerCLIEnvironment(BaseEnvironment):
 
     async def exec(self, cmd: str, *, timeout_s: float | None = None) -> ExecResult:
         qcmd = shlex.quote(cmd)
+        env_args: list[str] = []
+        for key, value in sorted((self.config.runtime_env or {}).items()):
+            env_args.extend(["-e", shlex.quote(f"{key}={value}")])
         full = (
-            f"{self.engine} exec -w {shlex.quote(self._workdir)} {shlex.quote(self._container_name)} "
+            f"{self.engine} exec -w {shlex.quote(self._workdir)} {' '.join(env_args)} {shlex.quote(self._container_name)} "
             f"sh -lc {qcmd}"
         )
         r = await _host_exec(full, timeout_s=timeout_s)

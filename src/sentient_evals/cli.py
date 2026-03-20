@@ -245,6 +245,19 @@ def _cli_flag_present(flag: str) -> bool:
     return False
 
 
+def _parse_runtime_env_entries(entries: list[str] | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw in entries or []:
+        key, sep, value = raw.partition("=")
+        key = key.strip()
+        if sep != "=" or not key:
+            raise typer.BadParameter(
+                f"Invalid --runtime-env value '{raw}'. Expected KEY=VALUE."
+            )
+        parsed[key] = value
+    return parsed
+
+
 def _load_trial_results(trials_dir: Path) -> list[TrialResult]:
     if not trials_dir.exists():
         return []
@@ -556,6 +569,11 @@ def run(
         "--modal-allow-network",
         help="Allow outbound network access in Modal sandboxes (overrides task config).",
     ),
+    runtime_env: Optional[list[str]] = typer.Option(
+        None,
+        "--runtime-env",
+        help="Runtime env var to expose inside the sandbox as KEY=VALUE (repeatable).",
+    ),
     limit_tasks: Optional[int] = typer.Option(
         None,
         "--limit-tasks",
@@ -696,6 +714,7 @@ def run(
 
     jobs_dir = jobs_dir.expanduser().resolve()
     env_type = EnvironmentType(env.lower())
+    runtime_env_map = _parse_runtime_env_entries(runtime_env)
     cfg = RunConfig(
         run_id=run_id,
         suite=suite,
@@ -712,6 +731,7 @@ def run(
         modal_volumes=tuple(modal_volume or ()),
         modal_cidr_allowlist=tuple(modal_cidr_allowlist or ()),
         modal_allow_network=modal_allow_network,
+        runtime_env=runtime_env_map or None,
     )
 
     status_ctx = (

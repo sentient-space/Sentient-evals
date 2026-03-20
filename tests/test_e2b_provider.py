@@ -294,6 +294,8 @@ async def test_e2b_provider_builds_template_from_dockerfile(monkeypatch, tmp_pat
     assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "dockerfile"
 
 
+
+
 @pytest.mark.asyncio
 async def test_e2b_provider_passes_explicit_api_key_to_template_apis(monkeypatch):
     monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))

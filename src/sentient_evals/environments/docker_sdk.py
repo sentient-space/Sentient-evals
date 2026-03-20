@@ -175,7 +175,12 @@ class DockerSDKEnvironment(BaseEnvironment):
         def _run() -> _SDKRes:
             started = loop.time()
             full = ["sh", "-lc", cmd]
-            r = self._container.exec_run(full, workdir=self._workdir, demux=True)
+            r = self._container.exec_run(
+                full,
+                workdir=self._workdir,
+                demux=True,
+                environment=self.config.runtime_env or None,
+            )
             dur_ms = int((loop.time() - started) * 1000)
             out = r.output or (b"", b"")
             stdout_b, stderr_b = out if isinstance(out, tuple) else (out, b"")

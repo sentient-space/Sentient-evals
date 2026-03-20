@@ -128,6 +128,18 @@ def _claude_template_build_memory_mb() -> int:
     return 4096
 
 
+def _normalize_e2b_cpu_count(raw: Any) -> int:
+    if raw is None:
+        raise ValueError("cpu count cannot be None")
+    value = float(raw)
+    if not value.is_integer():
+        raise ValueError(
+            f"E2B template builds require an integer cpu count; got {raw!r}. "
+            "Use a whole-number CPU value for E2B-backed container tasks."
+        )
+    return int(value)
+
+
 class E2BProvider(CloudSandboxProvider):
     name = "e2b"
     _preferred_user = "root"
@@ -161,7 +173,6 @@ class E2BProvider(CloudSandboxProvider):
             if params.resources.cpus is not None:
                 create_kwargs["metadata"]["cpus"] = str(params.resources.cpus)
             if params.resources.memory_mb is not None:
-                create_kwargs["ram_mb"] = int(params.resources.memory_mb)
                 create_kwargs["metadata"]["memory_mb"] = str(params.resources.memory_mb)
             if params.resources.storage_mb is not None:
                 create_kwargs["metadata"]["storage_mb"] = str(params.resources.storage_mb)
@@ -383,7 +394,7 @@ class E2BProvider(CloudSandboxProvider):
             default_memory_mb = _claude_template_build_memory_mb()
             if params.resources is not None:
                 if params.resources.cpus is not None:
-                    build_kwargs["cpu_count"] = params.resources.cpus
+                    build_kwargs["cpu_count"] = _normalize_e2b_cpu_count(params.resources.cpus)
                 if params.resources.memory_mb is not None:
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
             if "memory_mb" not in build_kwargs:
@@ -490,7 +501,7 @@ class E2BProvider(CloudSandboxProvider):
             }
             if params.resources is not None:
                 if params.resources.cpus is not None:
-                    build_kwargs["cpu_count"] = params.resources.cpus
+                    build_kwargs["cpu_count"] = _normalize_e2b_cpu_count(params.resources.cpus)
                 if params.resources.memory_mb is not None:
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
             await self._invoke(

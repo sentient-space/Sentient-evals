@@ -66,6 +66,8 @@ class ModalEnvironment(CloudSandboxEnvironment):
             block_network = False
 
         merged_provider_options = dict(provider_options or {})
+        if config.runtime_env:
+            merged_provider_options.setdefault("sandbox_secret_env", dict(config.runtime_env))
         merged_provider_options.update(
             {
                 "app_name": app_name,

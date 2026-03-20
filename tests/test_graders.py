@@ -74,6 +74,33 @@ def test_verifier_script_grader_reads_reward(tmp_path: Path):
     assert result.passed is True
 
 
+def test_verifier_script_grader_exports_task_and_trajectory_context(tmp_path: Path):
+    env = LocalToolExecutor(root=tmp_path)
+    spec = VerifierScriptSpec(
+        cmd=(
+            "sh -lc '"
+            "mkdir -p logs/verifier && "
+            "test -f .sentient_evals/task.json && "
+            "test -f .sentient_evals/trajectory.json && "
+            "test -f .sentient_evals/outcome.json && "
+            "echo 1 > logs/verifier/reward.txt'"
+        ),
+        reward_paths=("logs/verifier/reward.txt",),
+    )
+    grader = VerifierScriptGrader(spec=spec)
+    transcript = [TranscriptEvent(kind="message", role="user", content="hello")]
+    result = asyncio.run(
+        grader.grade_with_env(
+            task=Task(id="t1", input={"q": "?"}),
+            transcript=transcript,
+            outcome={"answer": "ok"},
+            artifacts=TrialArtifacts(tmp_path),
+            env=env,
+        )
+    )
+    assert result.passed is True
+
+
 def test_budget_grader_detects_missing_metrics():
     grader = BudgetGrader(max_tokens=10)
     result = asyncio.run(
