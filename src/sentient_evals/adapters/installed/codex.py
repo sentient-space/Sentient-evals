@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
-from .parsers.codex import parse_codex_session
+from .parsers.codex import parse_codex_exec_output, parse_codex_session
 from ...models import TranscriptEvent
 
 
@@ -63,6 +63,8 @@ class CodexAdapter(BaseInstalledAdapter):
         trial_dir = artifacts.base_dir
         agent_logs = trial_dir / "env_logs" / "agent"
         parsed = parse_codex_session(agent_logs, instruction=instruction)
+        if parsed is None and results:
+            parsed = parse_codex_exec_output(results[-1].stdout or "", instruction=instruction)
         if parsed is None:
             return await super().parse_run_artifacts(
                 task=task, instruction=instruction, results=results, artifacts=artifacts

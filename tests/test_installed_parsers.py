@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from sentient_evals.adapters.installed.parsers.claude_code import parse_claude_code_session
-from sentient_evals.adapters.installed.parsers.codex import parse_codex_session
+from sentient_evals.adapters.installed.parsers.codex import parse_codex_exec_output, parse_codex_session
 from sentient_evals.adapters.installed.parsers.gemini_cli import parse_gemini_trajectory
 from sentient_evals.adapters.installed.parsers.mini_swe_agent import parse_mini_swe_agent_trajectory
 from sentient_evals.adapters.installed.parsers.openhands import parse_openhands_session
@@ -87,6 +87,171 @@ def test_parse_codex_jsonl(tmp_path: Path):
     assert any(e.kind == "message" and e.role == "assistant" and (e.content or "") == "new" for e in parsed.events)
 
 
+def test_parse_codex_modern_session_jsonl(tmp_path: Path):
+    sessions = tmp_path / "sessions" / "2026" / "03" / "21"
+    sessions.mkdir(parents=True, exist_ok=True)
+    p = sessions / "rollout.jsonl"
+    p.write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp": "2026-03-21T00:00:00Z", "type": "session_meta", "payload": {"cli_version": "0.116.0"}}),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:01Z",
+                        "type": "response_item",
+                        "payload": {"type": "reasoning", "summary": [{"text": "Inspect the environment first."}]},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:02Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "phase": "commentary",
+                            "content": [{"type": "output_text", "text": "Checking Composio setup."}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:03Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "call_id": "call_1",
+                            "arguments": json.dumps({"cmd": "which composio"}),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:04Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call_output",
+                            "call_id": "call_1",
+                            "output": "Command: which composio\nOutput:\n/root/.composio/composio\n",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:05Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "web_search_call",
+                            "status": "completed",
+                            "action": {"type": "search", "query": "composio gmail send email"},
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:06Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 100,
+                                    "cached_input_tokens": 40,
+                                    "output_tokens": 12,
+                                }
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-21T00:00:07Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "phase": "final_answer",
+                            "content": [{"type": "output_text", "text": "Email sent."}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_codex_session(tmp_path, instruction="send the email")
+    assert parsed is not None
+    assert parsed.metrics["prompt_tokens"] == 100.0
+    assert parsed.metrics["cached_tokens"] == 40.0
+    assert parsed.metrics["completion_tokens"] == 12.0
+    assert any(e.kind == "message" and e.role == "assistant" and (e.content or "") == "Checking Composio setup." for e in parsed.events)
+    tool_calls = [e for e in parsed.events if e.kind == "tool_call" and e.tool_call]
+    assert any(e.tool_call and e.tool_call.id == "call_1" and e.tool_call.name == "exec_command" for e in tool_calls)
+    exec_event = next(e for e in tool_calls if e.tool_call and e.tool_call.id == "call_1")
+    assert exec_event.observation == "Command: which composio\nOutput:\n/root/.composio/composio\n"
+    assert any(e.reasoning_content == "Inspect the environment first." for e in parsed.events)
+    assert any(e.tool_call and e.tool_call.name == "search" for e in tool_calls)
+    assert any(e.kind == "message" and e.role == "assistant" and (e.content or "") == "Email sent." for e in parsed.events)
+
+
+def test_parse_codex_exec_output_stream(tmp_path: Path):
+    del tmp_path
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "item_0", "type": "agent_message", "text": "Checking Composio setup."},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item_1",
+                        "type": "command_execution",
+                        "command": "/bin/bash -lc 'which composio'",
+                        "aggregated_output": "/root/.composio/composio\n",
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "item_2", "type": "agent_message", "text": "Email sent."},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 50, "cached_input_tokens": 10, "output_tokens": 5},
+                }
+            ),
+        ]
+    )
+    parsed = parse_codex_exec_output(stdout, instruction="send the email")
+    assert parsed is not None
+    assert parsed.metrics["prompt_tokens"] == 50.0
+    assert parsed.metrics["cached_tokens"] == 10.0
+    assert parsed.metrics["completion_tokens"] == 5.0
+    assert any(e.kind == "message" and e.role == "assistant" and (e.content or "") == "Checking Composio setup." for e in parsed.events)
+    tool_calls = [e for e in parsed.events if e.kind == "tool_call" and e.tool_call]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call.name == "exec_command"
+    assert tool_calls[0].observation == {
+        "stdout": "/root/.composio/composio\n",
+        "exit_code": 0,
+        "status": "completed",
+        "command": "/bin/bash -lc 'which composio'",
+    }
+
+
 def test_parse_claude_stream_json_basic(tmp_path: Path):
     sessions = tmp_path / "sessions" / "projects" / "p"
     sessions.mkdir(parents=True, exist_ok=True)
@@ -149,4 +314,3 @@ def test_final_metrics_populated_from_transcript(tmp_path: Path):
     assert traj.final_metrics is not None
     assert traj.final_metrics.total_prompt_tokens == 2
     assert traj.final_metrics.total_completion_tokens == 3
-
