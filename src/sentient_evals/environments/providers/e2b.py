@@ -92,6 +92,16 @@ def _strip_dockerfile_comments(dockerfile: Path) -> str:
     return f"{content}\n" if content else ""
 
 
+def _instantiate_template_builder(template_cls: Any, *, context_dir: Path | None) -> Any:
+    if context_dir is not None:
+        for value in (str(context_dir), context_dir):
+            try:
+                return template_cls(file_context_path=value)
+            except TypeError:
+                continue
+    return template_cls()
+
+
 def _adapter_name(params: SandboxCreateParams) -> str | None:
     options = params.provider_options or {}
     raw = options.get("adapter_name")
@@ -386,6 +396,7 @@ class E2BProvider(CloudSandboxProvider):
                 template_cls,
                 source_image=source_image,
                 dockerfile=params.dockerfile,
+                context_dir=params.context_dir,
             )
             build_kwargs: dict[str, Any] = {
                 "template": template,
@@ -430,8 +441,9 @@ class E2BProvider(CloudSandboxProvider):
         *,
         source_image: str | None,
         dockerfile: Path | None,
+        context_dir: Path | None,
     ) -> Any:
-        template = template_cls()
+        template = _instantiate_template_builder(template_cls, context_dir=context_dir)
         from_dockerfile = getattr(template, "from_dockerfile", None)
         if not callable(from_dockerfile):
             raise RuntimeError("E2B Template API does not expose from_dockerfile()")
@@ -530,7 +542,7 @@ class E2BProvider(CloudSandboxProvider):
         source_image: str | None,
         dockerfile: Path | None,
     ) -> Any:
-        template = template_cls()
+        template = _instantiate_template_builder(template_cls, context_dir=params.context_dir)
         if source_image:
             from_image = getattr(template, "from_image", None)
             if not callable(from_image):

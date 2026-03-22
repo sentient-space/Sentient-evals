@@ -102,6 +102,24 @@ class _FlakySandboxClass:
 
 
 class _FakeTemplateBuilder:
+    def __init__(self, *, file_context_path: str | Path | None = None) -> None:
+        self.definition: tuple[str, str] | None = None
+        self.file_context_path = file_context_path
+
+    def from_image(self, *, image: str):
+        self.definition = ("image", image)
+        return {"kind": "image", "image": image, "context": self.file_context_path}
+
+    def from_dockerfile(self, dockerfile_content_or_path: str):
+        self.definition = ("dockerfile", dockerfile_content_or_path)
+        return {
+            "kind": "dockerfile",
+            "path": dockerfile_content_or_path,
+            "context": self.file_context_path,
+        }
+
+
+class _LegacyTemplateBuilder:
     def __init__(self) -> None:
         self.definition: tuple[str, str] | None = None
 
@@ -292,6 +310,30 @@ async def test_e2b_provider_builds_template_from_dockerfile(monkeypatch, tmp_pat
     assert _FakeAsyncTemplate.build_calls
     assert _FakeAsyncTemplate.alias_exists_calls
     assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "dockerfile"
+    assert _FakeAsyncTemplate.build_calls[0]["template"]["context"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_e2b_provider_builds_template_from_dockerfile_without_template_context_support(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(E2BProvider, "_sandbox_cls", staticmethod(lambda: _FakeSandboxClass))
+    _FakeAsyncTemplate.reset()
+    monkeypatch.setattr(
+        E2BProvider,
+        "_template_classes",
+        staticmethod(lambda: (_LegacyTemplateBuilder, _FakeAsyncTemplate)),
+    )
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM python:3.11-slim\nWORKDIR /workspace\n", encoding="utf-8")
+    provider = E2BProvider()
+    sandbox = await provider.create(SandboxCreateParams(dockerfile=dockerfile, context_dir=tmp_path))
+
+    assert isinstance(sandbox, _FakeSandbox)
+    assert _FakeAsyncTemplate.build_calls
+    assert _FakeAsyncTemplate.build_calls[0]["template"]["kind"] == "dockerfile"
+    assert "FROM python:3.11-slim" in _FakeAsyncTemplate.build_calls[0]["template"]["path"]
 
 
 
@@ -407,6 +449,7 @@ async def test_e2b_provider_builds_claude_augmented_template_from_dockerfile(mon
     assert _FakeAsyncTemplate.build_calls
     template = _FakeAsyncTemplate.build_calls[0]["template"]
     assert template["kind"] == "dockerfile"
+    assert template["context"] == str(tmp_path)
     assert "curl -fsSL https://claude.ai/install.sh | bash" in template["path"]
     assert _FakeAsyncTemplate.build_calls[0]["memory_mb"] == 4096
 
