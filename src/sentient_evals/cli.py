@@ -90,6 +90,13 @@ _PROVIDER_ENV_HINTS = {
 }
 
 
+def _has_codex_auth() -> bool:
+    return any(
+        bool((os.environ.get(name) or "").strip())
+        for name in ("OPENAI_API_KEY", "CODEX_AUTH_JSON", "CODEX_AUTH_JSON_PATH")
+    )
+
+
 def _prompt_secret_env(name: str, *, label: str | None = None) -> bool:
     if os.environ.get(name):
         return True
@@ -124,7 +131,8 @@ def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
         return
 
     if adapter == "codex":
-        _prompt_secret_env("OPENAI_API_KEY")
+        if not _has_codex_auth():
+            _prompt_secret_env("OPENAI_API_KEY", label="OpenAI API key or provide CODEX_AUTH_JSON")
         return
     if adapter == "cursor-cli":
         _prompt_secret_env("CURSOR_API_KEY")
@@ -167,6 +175,41 @@ def _maybe_prompt_api_keys(adapter: str, model: str | None) -> None:
             _prompt_required(required)
         elif any_of:
             _prompt_any_of(any_of, label=f"{provider} API key")
+
+
+def _collect_grader_api_envs(specs: list[dict]) -> list[str]:
+    envs: list[str] = []
+
+    def _add(env_name: str | None) -> None:
+        name = str(env_name or "").strip()
+        if name and name not in envs:
+            envs.append(name)
+
+    def _walk(spec: dict) -> None:
+        grader_type = str(spec.get("type") or "").strip()
+        config = spec.get("config") if isinstance(spec.get("config"), dict) else {}
+        if grader_type in {"llm_judge", "pairwise_judge"}:
+            judge_cfg = config.get("judge") if isinstance(config.get("judge"), dict) else {}
+            _add(judge_cfg.get("api_key_env") or config.get("api_key_env") or "OPENAI_API_KEY")
+            return
+        if grader_type == "multi_llm_judge":
+            judges = config.get("judges")
+            if isinstance(judges, list):
+                for child in judges:
+                    if isinstance(child, dict):
+                        _walk(child)
+
+    for spec in specs:
+        if isinstance(spec, dict):
+            _walk(spec)
+    return envs
+
+
+def _maybe_prompt_grader_api_keys(specs: list[dict]) -> None:
+    if not sys.stdin.isatty():
+        return
+    for env_name in _collect_grader_api_envs(specs):
+        _prompt_secret_env(env_name, label=f"Judge API key ({env_name})")
 
 
 _CLOUD_PROVIDER_API_KEYS = {
@@ -709,6 +752,7 @@ def run(
         raise typer.BadParameter("Provide --graders-file or --config (graders) when using --tasks")
 
     graders = [build_grader(s) for s in grader_specs]
+    _maybe_prompt_grader_api_keys(grader_specs)
     if run_id is None:
         run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S")
 
