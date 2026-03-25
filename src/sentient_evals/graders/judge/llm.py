@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from ...artifacts import TrialArtifacts
-from ...judges import JudgeClient, LiteLLMJudgeClient
+from ...judges import DirectJudgeClient, JudgeClient
 from ...models import GraderResult, Severity, Task, TranscriptEvent
 
 
@@ -80,7 +80,7 @@ class LLMJudgeGrader:
                     severity=Severity.error,
                     details={"error": f"Missing API key env var: {self.config.api_key_env}"},
                 )
-            client = LiteLLMJudgeClient(api_key=api_key)
+            client = DirectJudgeClient(api_key=api_key)
         try:
             resp = await client.score(
                 model=self.config.model,

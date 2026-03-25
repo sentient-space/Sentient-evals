@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = [
-  "litellm>=1.50",
+  "httpx>=0.28.1",
 ]
 docker = [
   "docker",
