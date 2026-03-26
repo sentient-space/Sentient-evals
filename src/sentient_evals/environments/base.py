@@ -64,3 +64,6 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     async def download_dir(self, source_dir: str, target_dir: Path) -> None: ...
+
+    async def sync_logs(self) -> None:
+        return None

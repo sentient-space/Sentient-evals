@@ -159,7 +159,12 @@ def test_parse_codex_modern_session_jsonl(tmp_path: Path):
                                     "input_tokens": 100,
                                     "cached_input_tokens": 40,
                                     "output_tokens": 12,
-                                }
+                                },
+                                "last_token_usage": {
+                                    "input_tokens": 25,
+                                    "cached_input_tokens": 10,
+                                    "output_tokens": 4,
+                                },
                             },
                         },
                     }
@@ -194,6 +199,12 @@ def test_parse_codex_modern_session_jsonl(tmp_path: Path):
     assert exec_event.observation == "Command: which composio\nOutput:\n/root/.composio/composio\n"
     assert any(e.reasoning_content == "Inspect the environment first." for e in parsed.events)
     assert any(e.tool_call and e.tool_call.name == "search" for e in tool_calls)
+    search_event = next(e for e in tool_calls if e.tool_call and e.tool_call.name == "search")
+    assert search_event.metrics == {
+        "prompt_tokens": 25.0,
+        "completion_tokens": 4.0,
+        "cached_tokens": 10.0,
+    }
     assert any(e.kind == "message" and e.role == "assistant" and (e.content or "") == "Email sent." for e in parsed.events)
 
 
@@ -249,6 +260,12 @@ def test_parse_codex_exec_output_stream(tmp_path: Path):
         "exit_code": 0,
         "status": "completed",
         "command": "/bin/bash -lc 'which composio'",
+    }
+    final_message = next(e for e in parsed.events if e.kind == "message" and e.role == "assistant" and (e.content or "") == "Email sent.")
+    assert final_message.metrics == {
+        "prompt_tokens": 50.0,
+        "completion_tokens": 5.0,
+        "cached_tokens": 10.0,
     }
 
 

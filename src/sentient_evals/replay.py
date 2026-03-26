@@ -98,6 +98,11 @@ class RecordingToolExecutor:
             self._write(ToolEvent(t=_utc(), tool=f"call:{tool_name}", args=args, result=None, error=str(e)))
             raise
 
+    async def sync_logs(self) -> None:
+        sync_logs = getattr(self.inner, "sync_logs", None)
+        if callable(sync_logs):
+            await sync_logs()
+
     def close(self) -> None:
         try:
             self._fh.close()
@@ -172,3 +177,5 @@ class ReplayingToolExecutor:
             raise RuntimeError(ev["error"])
         return ev.get("result")
 
+    async def sync_logs(self) -> None:
+        return None

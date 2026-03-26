@@ -70,6 +70,6 @@ class GeminiCliAdapter(BaseInstalledAdapter):
         if parsed.extra:
             parsed_dir.write_json("extra.json", parsed.extra)
         out = list(parsed.events)
-        if parsed.metrics:
+        if parsed.metrics and not any(event.metrics for event in out):
             out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
         return out

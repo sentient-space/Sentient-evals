@@ -37,6 +37,9 @@ class ToolExecutor(Protocol):
     async def call(self, tool_name: str, args: dict[str, Any]) -> Any:
         ...
 
+    async def sync_logs(self) -> None:
+        ...
+
 
 class LocalToolExecutor:
     def __init__(self, *, root: Path):
@@ -103,6 +106,9 @@ class LocalToolExecutor:
             return await self.list_dir(str(args.get("path", "")))
         raise ValueError(f"Unknown tool: {tool_name}")
 
+    async def sync_logs(self) -> None:
+        return None
+
 
 class EnvironmentToolExecutor:
     """
@@ -158,3 +164,5 @@ class EnvironmentToolExecutor:
             return await self.list_dir(str(args.get("path", "")))
         raise ValueError(f"Unknown tool: {tool_name}")
 
+    async def sync_logs(self) -> None:
+        await self.env.sync_logs()

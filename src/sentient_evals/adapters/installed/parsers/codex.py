@@ -126,6 +126,41 @@ def _merge_metrics(metrics: dict[str, float], payload: dict[str, Any] | None) ->
         metrics[key] = max(metrics.get(key, 0.0), value)
 
 
+def _step_metrics_from_usage(payload: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    prompt_tokens = payload.get("input_tokens")
+    completion_tokens = payload.get("output_tokens")
+    cached_tokens = payload.get("cached_input_tokens")
+    step_metrics: dict[str, float] = {}
+    for key, raw in (
+        ("prompt_tokens", prompt_tokens),
+        ("completion_tokens", completion_tokens),
+        ("cached_tokens", cached_tokens),
+    ):
+        if raw is None:
+            continue
+        try:
+            step_metrics[key] = float(raw)
+        except Exception:
+            continue
+    return step_metrics or None
+
+
+def _attach_usage_to_last_turn_event(
+    events: list[TranscriptEvent],
+    turn_event_indexes: list[int],
+    usage_payload: dict[str, Any] | None,
+) -> None:
+    step_metrics = _step_metrics_from_usage(usage_payload)
+    if not step_metrics or not turn_event_indexes:
+        return
+    target = events[turn_event_indexes[-1]]
+    merged = dict(target.metrics or {})
+    merged.update(step_metrics)
+    target.metrics = merged
+
+
 def _finalize_parse(
     *,
     instruction: str,
@@ -156,6 +191,7 @@ def _parse_codex_session_events(
     metrics: dict[str, float] = {}
     pending_tool_calls: dict[str, TranscriptEvent] = {}
     pending_reasoning: list[str] = []
+    turn_event_indexes: list[int] = []
 
     def _flush_reasoning(target: TranscriptEvent | None = None) -> None:
         nonlocal pending_reasoning
@@ -176,6 +212,7 @@ def _parse_codex_session_events(
                 reasoning_content=reasoning_text,
             )
         )
+        turn_event_indexes.append(len(events) - 1)
 
     for raw_event in raw_events:
         event_type = raw_event.get("type")
@@ -198,6 +235,7 @@ def _parse_codex_session_events(
             if pending_reasoning and not event.reasoning_content:
                 _flush_reasoning(event)
             events.append(event)
+            turn_event_indexes.append(len(events) - 1)
             continue
 
         if event_type == "tool_call":
@@ -218,6 +256,7 @@ def _parse_codex_session_events(
             if extra_payload:
                 tool_event.extra = extra_payload
             events.append(tool_event)
+            turn_event_indexes.append(len(events) - 1)
             if call_id:
                 pending_tool_calls[str(call_id)] = tool_event
             continue
@@ -227,7 +266,10 @@ def _parse_codex_session_events(
             if payload_type == "token_count":
                 info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
                 total = info.get("total_token_usage") if isinstance(info.get("total_token_usage"), dict) else {}
+                last = info.get("last_token_usage") if isinstance(info.get("last_token_usage"), dict) else {}
                 _merge_metrics(metrics, total)
+                _attach_usage_to_last_turn_event(events, turn_event_indexes, last or total)
+                turn_event_indexes = []
             continue
 
         if event_type != "response_item":
@@ -247,6 +289,7 @@ def _parse_codex_session_events(
             if pending_reasoning and not event.reasoning_content:
                 _flush_reasoning(event)
             events.append(event)
+            turn_event_indexes.append(len(events) - 1)
             continue
 
         if payload_type == "function_call":
@@ -264,6 +307,7 @@ def _parse_codex_session_events(
             if extra_payload:
                 tool_event.extra = extra_payload
             events.append(tool_event)
+            turn_event_indexes.append(len(events) - 1)
             if call_id:
                 pending_tool_calls[call_id] = tool_event
             continue
@@ -285,6 +329,7 @@ def _parse_codex_session_events(
             if pending_reasoning:
                 _flush_reasoning(tool_event)
             events.append(tool_event)
+            turn_event_indexes.append(len(events) - 1)
             continue
 
         if payload_type == "reasoning":
@@ -309,6 +354,7 @@ def _parse_codex_session_events(
             if pending_reasoning:
                 _flush_reasoning(tool_event)
             events.append(tool_event)
+            turn_event_indexes.append(len(events) - 1)
             continue
 
     _flush_reasoning()
@@ -338,11 +384,15 @@ def parse_codex_exec_output(stdout: str, *, instruction: str) -> ParseResult | N
     events: list[TranscriptEvent] = []
     metrics: dict[str, float] = {}
     pending_tool_calls: dict[str, TranscriptEvent] = {}
+    turn_event_indexes: list[int] = []
     for raw_event in raw_events:
         event_type = raw_event.get("type")
         timestamp = safe_parse_timestamp(raw_event.get("timestamp")) or utcnow()
         if event_type == "turn.completed":
-            _merge_metrics(metrics, raw_event.get("usage") if isinstance(raw_event.get("usage"), dict) else {})
+            usage = raw_event.get("usage") if isinstance(raw_event.get("usage"), dict) else {}
+            _merge_metrics(metrics, usage)
+            _attach_usage_to_last_turn_event(events, turn_event_indexes, usage)
+            turn_event_indexes = []
             continue
         if event_type != "item.completed":
             continue
@@ -353,6 +403,7 @@ def parse_codex_exec_output(stdout: str, *, instruction: str) -> ParseResult | N
             if not text:
                 continue
             events.append(message_event(role="assistant", content=text, t=timestamp))
+            turn_event_indexes.append(len(events) - 1)
             continue
         if item_type != "command_execution":
             continue
@@ -365,6 +416,7 @@ def parse_codex_exec_output(stdout: str, *, instruction: str) -> ParseResult | N
             tool_event.tool_call.id = call_id or None  # type: ignore[union-attr]
             pending_tool_calls[call_id] = tool_event
             events.append(tool_event)
+            turn_event_indexes.append(len(events) - 1)
         observation_payload = {
             "stdout": item.get("aggregated_output"),
             "exit_code": item.get("exit_code"),

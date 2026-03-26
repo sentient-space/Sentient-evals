@@ -64,7 +64,7 @@ class CloudSandboxEnvironment(BaseEnvironment):
         cleanup_error: Exception | None = None
         try:
             try:
-                await self.download_dir(self._settings.remote_logs, self.logs_dir)
+                await self.sync_logs()
             except Exception:
                 pass
         finally:
@@ -179,6 +179,11 @@ class CloudSandboxEnvironment(BaseEnvironment):
             target_dir,
             retries=2,
         )
+
+    async def sync_logs(self) -> None:
+        if self._sandbox is None:
+            return
+        await self.download_dir(self._settings.remote_logs, self.logs_dir)
 
     def _remote_path(self, path: str) -> str:
         if os.path.isabs(path):
