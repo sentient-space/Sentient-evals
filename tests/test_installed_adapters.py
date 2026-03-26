@@ -4,6 +4,7 @@ from pathlib import Path
 from sentient_evals.adapters.installed.aider import AiderAdapter
 from sentient_evals.adapters.installed.base import BaseInstalledAdapter, ExecCommand
 from sentient_evals.adapters.installed.codex import CodexAdapter
+from sentient_evals.adapters.installed.cursor_cli import CursorCliAdapter
 from sentient_evals.artifacts import TrialArtifacts
 from sentient_evals.env import ExecResult
 from sentient_evals.models import Outcome, Task, TranscriptEvent
@@ -102,6 +103,15 @@ def test_installed_adapter_env_overrides_do_not_require_process_env(tmp_path: Pa
     commands = adapter.create_run_commands("solve it", task=Task(id="t1"), seed=1)
     assert commands
     assert commands[0].env == {"AIDER_API_KEY": "openai=test-key"}
+
+
+def test_cursor_cli_uses_stream_json_output(tmp_path: Path):
+    del tmp_path
+    adapter = CursorCliAdapter(model_name="cursor/auto", env_overrides={"CURSOR_API_KEY": "cursor-test-key"})
+    commands = adapter.create_run_commands("solve it", task=Task(id="t1"), seed=1)
+    assert commands
+    assert "--output-format stream-json" in commands[0].cmd
+    assert commands[0].env == {"CURSOR_API_KEY": "cursor-test-key"}
 
 
 def test_installed_adapter_run_syncs_logs_before_parsing(tmp_path: Path):

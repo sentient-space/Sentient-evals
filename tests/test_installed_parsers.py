@@ -3,6 +3,7 @@ from pathlib import Path
 
 from sentient_evals.adapters.installed.parsers.claude_code import parse_claude_code_session
 from sentient_evals.adapters.installed.parsers.codex import parse_codex_exec_output, parse_codex_session
+from sentient_evals.adapters.installed.parsers.cursor_cli import parse_cursor_cli_stream
 from sentient_evals.adapters.installed.parsers.gemini_cli import parse_gemini_trajectory
 from sentient_evals.adapters.installed.parsers.mini_swe_agent import parse_mini_swe_agent_trajectory
 from sentient_evals.adapters.installed.parsers.openhands import parse_openhands_session
@@ -51,6 +52,144 @@ def test_parse_openhands_tool_call_metadata(tmp_path: Path):
     assert tool_calls[0].tool_call.id == "t1"
     assert tool_calls[0].observation == "ok"
 
+
+
+def test_parse_cursor_cli_stream_emits_tool_calls_and_metrics(tmp_path: Path):
+    output = tmp_path / "cursor-cli.txt"
+    output.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "apiKeySource": "env",
+                        "cwd": "/app",
+                        "session_id": "sess-1",
+                        "model": "Claude 4 Sonnet",
+                        "permissionMode": "default",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "Read the file and summarize it"}],
+                        },
+                        "session_id": "sess-1",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "I'll inspect the file first."}],
+                        },
+                        "session_id": "sess-1",
+                        "model_call_id": "mc-1",
+                        "timestamp_ms": 1710000001000,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_call",
+                        "subtype": "started",
+                        "call_id": "tool-1",
+                        "tool_call": {"readToolCall": {"args": {"path": "README.md"}}},
+                        "session_id": "sess-1",
+                        "model_call_id": "mc-1",
+                        "timestamp_ms": 1710000001500,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_call",
+                        "subtype": "completed",
+                        "call_id": "tool-1",
+                        "tool_call": {
+                            "readToolCall": {
+                                "args": {"path": "README.md"},
+                                "result": {"success": {"content": "# Title", "totalLines": 1}},
+                            }
+                        },
+                        "session_id": "sess-1",
+                        "model_call_id": "mc-1",
+                        "timestamp_ms": 1710000002000,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Done. I summarized the file."}],
+                        },
+                        "session_id": "sess-1",
+                        "model_call_id": "mc-2",
+                        "timestamp_ms": 1710000003000,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "duration_ms": 5234,
+                        "duration_api_ms": 4100,
+                        "is_error": False,
+                        "result": "Done. I summarized the file.",
+                        "usage": {
+                            "inputTokens": 100,
+                            "outputTokens": 20,
+                            "cacheReadTokens": 5,
+                            "cacheWriteTokens": 2,
+                        },
+                        "session_id": "sess-1",
+                        "request_id": "req-1",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_cursor_cli_stream(tmp_path, instruction="Read the file and summarize it")
+    assert parsed is not None
+    assert parsed.metrics == {
+        "prompt_tokens": 107.0,
+        "completion_tokens": 20.0,
+        "cached_tokens": 5.0,
+    }
+    assert parsed.extra == {
+        "source": "cursor-cli-stream",
+        "output_file": "cursor-cli.txt",
+        "session_id": "sess-1",
+        "model": "Claude 4 Sonnet",
+        "permission_mode": "default",
+        "api_key_source": "env",
+        "duration_ms": 5234,
+        "duration_api_ms": 4100,
+        "request_id": "req-1",
+        "result_subtypes": ["success"],
+    }
+    tool_calls = [e for e in parsed.events if e.kind == "tool_call" and e.tool_call]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call.id == "tool-1"
+    assert tool_calls[0].tool_call.name == "readToolCall"
+    assert tool_calls[0].tool_call.args == {"path": "README.md"}
+    assert tool_calls[0].observation == '{"success": {"content": "# Title", "totalLines": 1}}'
+    assert tool_calls[0].tool_call.started_at is not None
+    assert tool_calls[0].tool_call.ended_at is not None
+    assert any(
+        e.kind == "message" and e.role == "assistant" and (e.content or "") == "I'll inspect the file first."
+        for e in parsed.events
+    )
+    assert any(
+        e.kind == "message" and e.role == "assistant" and (e.content or "") == "Done. I summarized the file."
+        for e in parsed.events
+    )
 
 
 def test_parse_codex_jsonl(tmp_path: Path):
