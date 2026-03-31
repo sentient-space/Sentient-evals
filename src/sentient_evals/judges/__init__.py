@@ -1,4 +1,4 @@
 from .base import JudgeClient, JudgeResponse
-from .litellm_client import LiteLLMJudgeClient
+from .direct_client import DirectJudgeClient
 
-__all__ = ["JudgeClient", "JudgeResponse", "LiteLLMJudgeClient"]
+__all__ = ["JudgeClient", "JudgeResponse", "DirectJudgeClient"]

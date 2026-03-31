@@ -69,6 +69,16 @@ class DaytonaProvider(CloudSandboxProvider):
                 client[target_key] = raw.strip()
         return client
 
+    @staticmethod
+    def _lifecycle_interval(options: dict[str, Any], key: str) -> int:
+        raw = options.get(key)
+        if raw is None:
+            return 0
+        try:
+            return max(0, int(raw))
+        except Exception as exc:
+            raise ValueError(f"Daytona provider option '{key}' must be an integer number of seconds") from exc
+
     async def create(self, params: SandboxCreateParams) -> Any:
         from daytona import (  
             AsyncDaytona,
@@ -79,6 +89,9 @@ class DaytonaProvider(CloudSandboxProvider):
             Resources,
         )
         client_options = self._client_options(params)
+        lifecycle_options = params.provider_options or {}
+        auto_delete_interval = self._lifecycle_interval(lifecycle_options, "auto_delete_interval")
+        auto_stop_interval = self._lifecycle_interval(lifecycle_options, "auto_stop_interval")
         if client_options:
             daytona = AsyncDaytona(DaytonaConfig(**client_options))
         else:
@@ -91,8 +104,8 @@ class DaytonaProvider(CloudSandboxProvider):
                     sandbox = await daytona.create(
                         CreateSandboxFromSnapshotParams(
                             snapshot=snapshot,
-                            auto_delete_interval=0,
-                            auto_stop_interval=0,
+                            auto_delete_interval=auto_delete_interval,
+                            auto_stop_interval=auto_stop_interval,
                             network_block_all=params.network_block_all,
                         ),
                         timeout=round(params.build_timeout_sec or 0),
@@ -106,8 +119,8 @@ class DaytonaProvider(CloudSandboxProvider):
                     sandbox = await daytona.create(
                         CreateSandboxFromSnapshotParams(
                             snapshot=snapshot,
-                            auto_delete_interval=0,
-                            auto_stop_interval=0,
+                            auto_delete_interval=auto_delete_interval,
+                            auto_stop_interval=auto_stop_interval,
                             network_block_all=params.network_block_all,
                         ),
                         timeout=round(params.build_timeout_sec or 0),
@@ -141,8 +154,8 @@ class DaytonaProvider(CloudSandboxProvider):
                 CreateSandboxFromImageParams(
                     image=image,
                     resources=resources,
-                    auto_delete_interval=0,
-                    auto_stop_interval=0,
+                    auto_delete_interval=auto_delete_interval,
+                    auto_stop_interval=auto_stop_interval,
                     network_block_all=params.network_block_all,
                 ),
                 timeout=round(params.build_timeout_sec or 0),

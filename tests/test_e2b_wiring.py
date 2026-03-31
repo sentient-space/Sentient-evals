@@ -73,3 +73,18 @@ def test_factory_creates_e2b_environment_respects_workdir_override(tmp_path: Pat
     settings = getattr(env, "_settings")
     assert settings.remote_workspace == "/app"
     assert settings.default_cwd == "/app"
+
+
+def test_factory_e2b_includes_runtime_env_in_provider_options(tmp_path: Path):
+    env = EnvironmentFactory.create(
+        env_type=EnvironmentType.e2b,
+        trial_id="trial-1",
+        workspace_dir=tmp_path / "workspace",
+        logs_dir=tmp_path / "logs",
+        cfg=EnvironmentConfig(runtime_env={"COMPOSIO_API_KEY": "secret-key"}),
+        task_environment_dir=tmp_path / "task_environment",
+        container_image=None,
+    )
+    params = getattr(env, "_create_params")
+    assert params.provider_options is not None
+    assert params.provider_options["sandbox_env"] == {"COMPOSIO_API_KEY": "secret-key"}

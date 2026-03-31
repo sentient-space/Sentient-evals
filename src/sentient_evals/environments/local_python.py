@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import shutil
 from pathlib import Path
@@ -36,7 +38,34 @@ class LocalPythonEnvironment(BaseEnvironment):
 
     async def exec(self, cmd: str, *, timeout_s: float | None = None):
         rewritten = self._rewrite_mountpoints(cmd)
-        return await self._executor.exec(rewritten, timeout_s=timeout_s)
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            started = loop.time()
+            env = os.environ.copy()
+            env.update(self.config.runtime_env or {})
+            import subprocess
+
+            proc = subprocess.run(
+                rewritten,
+                shell=True,
+                cwd=self.workspace_dir,
+                text=True,
+                capture_output=True,
+                timeout=timeout_s,
+                env=env,
+            )
+            dur_ms = int((loop.time() - started) * 1000)
+            from sentient_evals.env import ExecResult
+
+            return ExecResult(
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                exit_code=int(proc.returncode),
+                duration_ms=dur_ms,
+            )
+
+        return await loop.run_in_executor(None, _run)
 
     async def upload_file(self, source_path: Path, target_path: str) -> None:
         p = self._map_env_path(target_path)
@@ -99,4 +128,3 @@ class LocalPythonEnvironment(BaseEnvironment):
             elif p.is_file() and not p.is_symlink():
                 out.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, out)
-

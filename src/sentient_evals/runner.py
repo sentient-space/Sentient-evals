@@ -60,6 +60,7 @@ class RunConfig:
     modal_cidr_allowlist: tuple[str, ...] = ()
     modal_allow_network: bool = False
     provider_options: dict[str, Any] | None = None
+    runtime_env: dict[str, str] | None = None
 
 
 def _wilson_ci95(passed: int, n: int) -> tuple[float, float]:
@@ -465,6 +466,18 @@ def _adapter_version(adapter: AgentAdapter) -> str:
     return "unknown"
 
 
+def _hook_script_exists(bundle: TaskBundle, name: str) -> bool:
+    return bool(bundle.tests_dir is not None and (bundle.tests_dir / name).exists())
+
+
+async def _run_optional_hook(*, environment, bundle: TaskBundle, script_name: str) -> None:
+    if not _hook_script_exists(bundle, script_name):
+        return
+    result = await environment.exec(f"sh -lc 'sh /tests/{script_name}'")
+    if result.exit_code != 0:
+        raise RuntimeError(result.stderr.strip() or f"{script_name} failed with exit code {result.exit_code}")
+
+
 def _min_provider_limit(bundles: Sequence[TaskBundle]) -> int | None:
     limit: int | None = None
     for bundle in bundles:
@@ -811,6 +824,14 @@ async def run_suite_bundles(
                     gpus=bundle.env.resources.gpus,
                     build_timeout_sec=bundle.env.build_timeout_sec,
                     provider_concurrency=bundle.env.provider_concurrency,
+                    runtime_env={
+                        **(cfg.runtime_env or {}),
+                        "SENTIENT_EVAL_RUN_ID": cfg.run_id,
+                        "SENTIENT_EVAL_TRIAL_ID": trial_id,
+                        "SENTIENT_EVAL_TASK_ID": bundle.task.id,
+                        "SENTIENT_EVAL_ATTEMPT": str(attempt),
+                        "SENTIENT_EVAL_SEED": str(seed),
+                    },
                 )
 
 
@@ -892,7 +913,14 @@ async def run_suite_bundles(
                             await environment.upload_dir(bundle.files_dir, ".")
                         if bundle.tests_dir is not None and bundle.tests_dir.exists():
                             await environment.upload_dir(bundle.tests_dir, "/tests")
-                            await environment.exec("sh -lc 'chmod +x /tests/test.sh 2>/dev/null || true'")
+                            await environment.exec(
+                                "sh -lc 'chmod +x /tests/test.sh /tests/setup.sh /tests/cleanup.sh 2>/dev/null || true'"
+                            )
+                            await _run_optional_hook(
+                                environment=environment,
+                                bundle=bundle,
+                                script_name="setup.sh",
+                            )
 
                         artifacts = TrialArtifacts(writer.trial_dir(trial_id))
                         _emit_event(on_event, "adapter_start", trial_id=trial_id, task_id=bundle.task.id)
@@ -974,6 +1002,15 @@ async def run_suite_bundles(
                     error_path.write_text(traceback.format_exc(), encoding="utf-8")
                     _emit_event(on_event, "trial_error", trial_id=trial_id, task_id=bundle.task.id, error=err)
                 finally:
+                    try:
+                        await _run_optional_hook(
+                            environment=environment,
+                            bundle=bundle,
+                            script_name="cleanup.sh",
+                        )
+                    except Exception:  # pragma: no cover
+                        cleanup_hook_error = logs_dir / "cleanup_hook_error.txt"
+                        cleanup_hook_error.write_text(traceback.format_exc(), encoding="utf-8")
                     try:
                         await environment.stop(delete=True)
                     except Exception:  # pragma: no cover

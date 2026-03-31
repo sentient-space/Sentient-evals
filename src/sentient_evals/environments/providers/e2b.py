@@ -92,6 +92,16 @@ def _strip_dockerfile_comments(dockerfile: Path) -> str:
     return f"{content}\n" if content else ""
 
 
+def _instantiate_template_builder(template_cls: Any, *, context_dir: Path | None) -> Any:
+    if context_dir is not None:
+        for value in (str(context_dir), context_dir):
+            try:
+                return template_cls(file_context_path=value)
+            except TypeError:
+                continue
+    return template_cls()
+
+
 def _adapter_name(params: SandboxCreateParams) -> str | None:
     options = params.provider_options or {}
     raw = options.get("adapter_name")
@@ -128,6 +138,18 @@ def _claude_template_build_memory_mb() -> int:
     return 4096
 
 
+def _normalize_e2b_cpu_count(raw: Any) -> int:
+    if raw is None:
+        raise ValueError("cpu count cannot be None")
+    value = float(raw)
+    if not value.is_integer():
+        raise ValueError(
+            f"E2B template builds require an integer cpu count; got {raw!r}. "
+            "Use a whole-number CPU value for E2B-backed container tasks."
+        )
+    return int(value)
+
+
 class E2BProvider(CloudSandboxProvider):
     name = "e2b"
     _preferred_user = "root"
@@ -161,7 +183,6 @@ class E2BProvider(CloudSandboxProvider):
             if params.resources.cpus is not None:
                 create_kwargs["metadata"]["cpus"] = str(params.resources.cpus)
             if params.resources.memory_mb is not None:
-                create_kwargs["ram_mb"] = int(params.resources.memory_mb)
                 create_kwargs["metadata"]["memory_mb"] = str(params.resources.memory_mb)
             if params.resources.storage_mb is not None:
                 create_kwargs["metadata"]["storage_mb"] = str(params.resources.storage_mb)
@@ -375,6 +396,7 @@ class E2BProvider(CloudSandboxProvider):
                 template_cls,
                 source_image=source_image,
                 dockerfile=params.dockerfile,
+                context_dir=params.context_dir,
             )
             build_kwargs: dict[str, Any] = {
                 "template": template,
@@ -383,7 +405,7 @@ class E2BProvider(CloudSandboxProvider):
             default_memory_mb = _claude_template_build_memory_mb()
             if params.resources is not None:
                 if params.resources.cpus is not None:
-                    build_kwargs["cpu_count"] = params.resources.cpus
+                    build_kwargs["cpu_count"] = _normalize_e2b_cpu_count(params.resources.cpus)
                 if params.resources.memory_mb is not None:
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
             if "memory_mb" not in build_kwargs:
@@ -419,8 +441,9 @@ class E2BProvider(CloudSandboxProvider):
         *,
         source_image: str | None,
         dockerfile: Path | None,
+        context_dir: Path | None,
     ) -> Any:
-        template = template_cls()
+        template = _instantiate_template_builder(template_cls, context_dir=context_dir)
         from_dockerfile = getattr(template, "from_dockerfile", None)
         if not callable(from_dockerfile):
             raise RuntimeError("E2B Template API does not expose from_dockerfile()")
@@ -490,7 +513,7 @@ class E2BProvider(CloudSandboxProvider):
             }
             if params.resources is not None:
                 if params.resources.cpus is not None:
-                    build_kwargs["cpu_count"] = params.resources.cpus
+                    build_kwargs["cpu_count"] = _normalize_e2b_cpu_count(params.resources.cpus)
                 if params.resources.memory_mb is not None:
                     build_kwargs["memory_mb"] = int(params.resources.memory_mb)
             await self._invoke(
@@ -519,7 +542,7 @@ class E2BProvider(CloudSandboxProvider):
         source_image: str | None,
         dockerfile: Path | None,
     ) -> Any:
-        template = template_cls()
+        template = _instantiate_template_builder(template_cls, context_dir=params.context_dir)
         if source_image:
             from_image = getattr(template, "from_image", None)
             if not callable(from_image):

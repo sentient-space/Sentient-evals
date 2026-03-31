@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from .base import BaseRegistryClient
-from .github import GitHubRegistryClient
+from .github import DEFAULT_BRANCH, DEFAULT_GITHUB_REPO, GitHubRegistryClient
 from .json import JsonRegistryClient
 
 
@@ -41,7 +41,13 @@ class RegistryClientFactory:
 
         if use_default:
             token = github_token or os.environ.get("GITHUB_TOKEN")
-            return GitHubRegistryClient(token=token)
+            repo = os.environ.get("SENTIENT_EVALS_GITHUB_REPO") or None
+            branch = os.environ.get("SENTIENT_EVALS_GITHUB_BRANCH") or None
+            return GitHubRegistryClient(
+                repo=repo or DEFAULT_GITHUB_REPO,
+                branch=branch or DEFAULT_BRANCH,
+                token=token,
+            )
 
         raise ValueError(
             "No registry source specified. "

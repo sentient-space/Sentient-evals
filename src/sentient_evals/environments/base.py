@@ -27,6 +27,7 @@ class EnvironmentConfig:
     gpus: int | None = None
     build_timeout_sec: float | None = None
     provider_concurrency: int | None = None
+    runtime_env: dict[str, str] | None = None
 
 
 class BaseEnvironment(ABC):
@@ -63,3 +64,6 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     async def download_dir(self, source_dir: str, target_dir: Path) -> None: ...
+
+    async def sync_logs(self) -> None:
+        return None

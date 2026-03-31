@@ -64,7 +64,7 @@ class CloudSandboxEnvironment(BaseEnvironment):
         cleanup_error: Exception | None = None
         try:
             try:
-                await self.download_dir(self._settings.remote_logs, self.logs_dir)
+                await self.sync_logs()
             except Exception:
                 pass
         finally:
@@ -87,13 +87,14 @@ class CloudSandboxEnvironment(BaseEnvironment):
         if self._sandbox is None:
             raise RuntimeError("Sandbox not started")
         cwd = self._settings.default_cwd or self._settings.remote_workspace
+        merged_env = dict(self.config.runtime_env or {}) or None
         start = time.monotonic()
         try:
             result = await self._provider.exec(
                 self._sandbox,
                 cmd,
                 cwd=cwd,
-                env=None,
+                env=merged_env,
                 timeout_s=timeout_s,
             )
             dur = int((time.monotonic() - start) * 1000)
@@ -178,6 +179,11 @@ class CloudSandboxEnvironment(BaseEnvironment):
             target_dir,
             retries=2,
         )
+
+    async def sync_logs(self) -> None:
+        if self._sandbox is None:
+            return
+        await self.download_dir(self._settings.remote_logs, self.logs_dir)
 
     def _remote_path(self, path: str) -> str:
         if os.path.isabs(path):

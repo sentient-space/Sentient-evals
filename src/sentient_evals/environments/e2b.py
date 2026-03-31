@@ -38,6 +38,8 @@ class E2BEnvironment(CloudSandboxEnvironment):
         merged_provider_options = dict(provider_options or {})
         if adapter_name:
             merged_provider_options.setdefault("adapter_name", adapter_name)
+        if config.runtime_env:
+            merged_provider_options.setdefault("sandbox_env", dict(config.runtime_env))
 
         params = SandboxCreateParams(
             image=image,

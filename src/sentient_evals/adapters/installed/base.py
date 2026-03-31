@@ -101,6 +101,15 @@ class BaseInstalledAdapter:
         ]
         return transcript
 
+    async def _sync_logs_for_parsing(self, env: ToolExecutor) -> None:
+        sync_logs = getattr(env, "sync_logs", None)
+        if not callable(sync_logs):
+            return
+        try:
+            await sync_logs()
+        except Exception:
+            self._logger.debug("best-effort log sync failed before parsing", exc_info=True)
+
     def build_outcome(self, transcript: Sequence[TranscriptEvent]) -> Outcome:
         answer = ""
         for ev in reversed(transcript):
@@ -204,6 +213,7 @@ class BaseInstalledAdapter:
                     f"Agent command failed for adapter={self.name} cmd_index={idx} "
                     f"(exit_code={res.exit_code}). See: {cmd_artifacts.base_dir}"
                 )
+        await self._sync_logs_for_parsing(env)
         transcript = await self.parse_run_artifacts(
             task=task, instruction=normalized_instruction, results=results, artifacts=artifacts
         )
