@@ -1,6 +1,6 @@
 [project]
 name = "sentient-evals"
-version = "0.1.16"
+version = "0.1.17"
 description = "Universal evaluation harness for AI agents (local + embeddable)."
 readme = "README.md"
 requires-python = ">=3.11"

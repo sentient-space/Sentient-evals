@@ -69,7 +69,7 @@ class CodexAdapter(BaseInstalledAdapter):
         model = self.model_name.split("/")[-1]
         auth_json, api_key = self._resolve_auth_json()
         env = {
-            "CODEX_HOME": "/logs/agent",
+            "CODEX_HOME": "/tmp/codex-home",
             "CODEX_AUTH_JSON": auth_json,
         }
         if api_key:
@@ -104,7 +104,11 @@ PY"""
                     f"{reasoning_flag}"
                     "-- "
                     f"{escaped_instruction} "
-                    "2>&1 </dev/null | tee /logs/agent/codex.txt"
+                    "2>&1 </dev/null | tee /logs/agent/codex.txt; "
+                    'mkdir -p /logs/agent/sessions; '
+                    'if [ -d "$CODEX_HOME/sessions" ]; then '
+                    'cp -R "$CODEX_HOME/sessions/." /logs/agent/sessions/ 2>/dev/null || true; '
+                    "fi"
                 ),
                 env=env,
             ),

@@ -114,6 +114,19 @@ def test_cursor_cli_uses_stream_json_output(tmp_path: Path):
     assert commands[0].env == {"CURSOR_API_KEY": "cursor-test-key"}
 
 
+def test_codex_uses_tmp_home_and_exports_sessions(tmp_path: Path):
+    del tmp_path
+    adapter = CodexAdapter(model_name="openai/o4-mini", env_overrides={"OPENAI_API_KEY": "test-key"})
+    commands = adapter.create_run_commands("solve it", task=Task(id="t1"), seed=1)
+    assert len(commands) == 2
+    assert commands[0].env is not None
+    assert commands[0].env["CODEX_HOME"] == "/tmp/codex-home"
+    assert commands[1].env is not None
+    assert commands[1].env["CODEX_HOME"] == "/tmp/codex-home"
+    assert 'tee /logs/agent/codex.txt; ' in commands[1].cmd
+    assert 'cp -R "$CODEX_HOME/sessions/." /logs/agent/sessions/' in commands[1].cmd
+
+
 def test_installed_adapter_run_syncs_logs_before_parsing(tmp_path: Path):
     tmpl = tmp_path / "install.sh"
     tmpl.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
