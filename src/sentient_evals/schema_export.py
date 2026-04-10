@@ -15,6 +15,7 @@ from .atif.models import (
     ToolCallSchema as AtifToolCallSchema,
     TrajectorySchema,
 )
+from .eval_defs import EmbeddedTaskDefinition, UnifiedEvalDefinition
 from .models import (
     GraderSpec,
     GraderResult,
@@ -61,6 +62,8 @@ SCHEMA_MODELS = {
     "ATIF_Metrics": MetricsSchema,
     "ATIF_FinalMetrics": FinalMetricsSchema,
     "ATIF_Agent": AgentSchema,
+    "EmbeddedTaskDefinition": EmbeddedTaskDefinition,
+    "UnifiedEvalDefinition": UnifiedEvalDefinition,
 }
 
 

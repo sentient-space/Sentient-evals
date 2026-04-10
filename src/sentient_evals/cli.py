@@ -21,6 +21,14 @@ from rich.prompt import Confirm
 from .environments.base import EnvironmentType
 from .agent_file import load_agent_adapter_from_file, parse_agent_file_ref
 from .config_files import load_run_spec
+from .eval_defs import (
+    build_definition_from_task_bundles,
+    definition_to_toml,
+    load_or_build_definition,
+    resolve_tasks_dir_for_run,
+    validate_definition,
+    write_definition_export,
+)
 from .models import SuiteConfig, Task, TrialResult
 from .junit import JUnitExportConfig, trials_to_junit_xml
 from .schema_export import export_json_schemas
@@ -56,6 +64,9 @@ app.add_typer(tasks_app, name="tasks")
 
 auth_app = typer.Typer(no_args_is_help=True)
 app.add_typer(auth_app, name="auth")
+
+evals_app = typer.Typer(no_args_is_help=True)
+app.add_typer(evals_app, name="evals")
 
 _BUILTIN_ADAPTERS = {
     "workflow_stub",
@@ -561,6 +572,89 @@ def _create_registry_client_for_run(
     )
 
 
+def _scaffold_task_bundle(task_dir: Path, *, task_name: str) -> None:
+    task_dir.mkdir(parents=True)
+    (task_dir / "environment").mkdir()
+    (task_dir / "tests").mkdir()
+
+    (task_dir / "instruction.md").write_text(
+        f"# {task_name}\n\nDescribe the task instructions here.\n",
+        encoding="utf-8",
+    )
+    (task_dir / "task.toml").write_text(
+        f'id = "{task_name}"\n'
+        f'timeout_seconds = 300\n\n'
+        f'[input]\n\n'
+        f'[metadata]\n'
+        f'difficulty = "medium"\n'
+        f'tags = []\n\n'
+        f'[environment]\n'
+        f'type = "container"\n'
+        f'allow_internet = true\n',
+        encoding="utf-8",
+    )
+    (task_dir / "environment" / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n\nWORKDIR /workspace\n\n# Add dependencies here\n",
+        encoding="utf-8",
+    )
+    (task_dir / "tests" / "test.sh").write_text(
+        "#!/bin/bash\n"
+        "set -e\n\n"
+        "mkdir -p /logs/verifier\n"
+        "# Add verification logic here\n"
+        "echo 1 > /logs/verifier/reward.txt\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+
+
+def _resolve_dataset_task_output_dir(output_dir: Path) -> Path:
+    if (output_dir / "task.toml").exists():
+        return output_dir
+    if (output_dir / "tasks").exists() and (output_dir / "tasks").is_dir():
+        return output_dir / "tasks"
+    if (output_dir / "eval.toml").exists():
+        return output_dir / "tasks"
+    return output_dir
+
+
+@app.command("init")
+def init_project(
+    name: str = typer.Argument("sentient-eval", help="Name of the dataset/eval project"),
+    output_dir: Path = typer.Option(Path("."), "-o", "--output-dir", help="Directory to create the project in"),
+):
+    """Scaffold a dataset root with a starter Harbor-style task."""
+    project_dir = (output_dir / name).resolve()
+    if project_dir.exists():
+        console.print(f"[red]Error: Directory '{project_dir}' already exists[/red]")
+        raise typer.Exit(1)
+
+    tasks_dir = project_dir / "tasks"
+    starter_task = tasks_dir / "starter_task"
+    _scaffold_task_bundle(starter_task, task_name="starter_task")
+    definition = build_definition_from_task_bundles(project_dir)
+    definition.metadata.id = name
+    definition.metadata.name = name
+    definition.metadata.description = "Sentient/Harbor-style eval dataset scaffold"
+    definition.dataset.path = "tasks"
+    definition.execution.evaluators = [{"type": "verifier_script", "config": {}}]
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "README.md").write_text(
+        f"# {name}\n\nThis dataset contains Harbor-style task bundles under `tasks/`.\n",
+        encoding="utf-8",
+    )
+    (project_dir / "eval.toml").write_text(definition_to_toml(definition), encoding="utf-8")
+
+    console.print(f"[green]Created eval dataset scaffold at: {project_dir}[/green]")
+    console.print("Files created:")
+    console.print(f"  {project_dir}/eval.toml")
+    console.print(f"  {project_dir}/README.md")
+    console.print(f"  {starter_task}/instruction.md")
+    console.print(f"  {starter_task}/task.toml")
+    console.print(f"  {starter_task}/environment/Dockerfile")
+    console.print(f"  {starter_task}/tests/test.sh")
+
+
 @app.command()
 def run(
     tasks_path: Optional[Path] = typer.Option(None, "--tasks", exists=True, readable=True),
@@ -626,23 +720,6 @@ def run(
     """
     Run an eval suite from tasks JSON, task bundles directory, or registry dataset.
     """
-    if adapter is None and agent_file is None and config is None:
-        adapter = select_adapter()
-        if adapter is None:
-            raise typer.Abort()
-
-    if model is None and adapter is not None and adapter in _BUILTIN_ADAPTERS:
-        model = prompt_model_name(adapter)
-
-    if adapter is not None and adapter in _BUILTIN_ADAPTERS:
-        _maybe_prompt_api_keys(adapter, model)
-
-    if env is None:
-        env = select_environment()
-        if env is None:
-            raise typer.Abort()
-    _prompt_cloud_provider_api_key(env)
-
     registry_client = None
     if tasks_path is None and tasks_dir is None:
         if dataset is None:
@@ -662,8 +739,6 @@ def run(
     source_count = sum([tasks_path is not None, tasks_dir is not None, dataset is not None])
     if source_count != 1:
         raise typer.BadParameter("Provide exactly one of --tasks, --tasks-dir, or --dataset")
-    if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
-        raise typer.BadParameter("--env only supports local_python when using --tasks")
 
     dataset_tasks_dir: Optional[Path] = None
     if dataset is not None:
@@ -677,8 +752,43 @@ def run(
             client=client,
         )
 
+    definition = None
+    definition_source_dir: Path | None = None
+    if tasks_dir is not None:
+        definition_source_dir = tasks_dir
+    elif dataset_tasks_dir is not None:
+        definition_source_dir = dataset_tasks_dir
+    if definition_source_dir is not None:
+        definition = load_or_build_definition(definition_source_dir)
+
+    if env is None and definition is not None and definition.execution.env:
+        env = definition.execution.env
+    if env is None:
+        env = select_environment()
+        if env is None:
+            raise typer.Abort()
+    _prompt_cloud_provider_api_key(env)
+    if tasks_path is not None and env.lower() != EnvironmentType.local_python.value:
+        raise typer.BadParameter("--env only supports local_python when using --tasks")
+
+    if adapter is None and agent_file is None and config is None:
+        adapter = select_adapter()
+        if adapter is None:
+            raise typer.Abort()
+
+    if model is None and adapter is not None and adapter in _BUILTIN_ADAPTERS:
+        model = prompt_model_name(adapter)
+
+    if adapter is not None and adapter in _BUILTIN_ADAPTERS:
+        _maybe_prompt_api_keys(adapter, model)
+
     spec = load_run_spec(config) if config is not None else None
     suite = spec.suite if spec and spec.suite is not None else SuiteConfig(id=suite_id)
+    if definition is not None and definition.execution.suite_config:
+        suite = SuiteConfig.model_validate({
+            **suite.model_dump(),
+            **definition.execution.suite_config,
+        })
     concurrency_provided = _cli_flag_present("--concurrency")
     if not concurrency_provided and sys.stdin.isatty():
         concurrency = prompt_concurrency(suite.concurrency)
@@ -726,10 +836,12 @@ def run(
         grader_specs = parsed
     elif spec is not None:
         grader_specs = spec.graders
+    elif definition is not None and definition.execution.evaluators:
+        grader_specs = definition.execution.evaluators
     elif tasks_dir is not None or dataset_tasks_dir is not None:
         effective_dir = tasks_dir or dataset_tasks_dir
         assert effective_dir is not None
-        bundles = load_task_bundles(effective_dir)
+        bundles = load_task_bundles(resolve_tasks_dir_for_run(effective_dir))
         if not bundles:
             raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
         if limit_tasks is not None:
@@ -789,7 +901,7 @@ def run(
                 effective_dir = tasks_dir or dataset_tasks_dir
                 assert effective_dir is not None
                 if bundles is None:
-                    bundles = load_task_bundles(effective_dir)
+                    bundles = load_task_bundles(resolve_tasks_dir_for_run(effective_dir))
                 if not bundles:
                     raise typer.BadParameter(f"No task bundles found under: {effective_dir}")
                 if limit_tasks is not None:
@@ -974,6 +1086,44 @@ def diff(
         console.print(mtable)
 
 
+@evals_app.command("validate")
+def evals_validate(path: Path = typer.Argument(..., exists=True, readable=True)):
+    """Validate a local eval dataset or eval.toml before running it."""
+    definition = load_or_build_definition(path)
+    issues = validate_definition(definition, base_dir=path if path.is_dir() else path.parent)
+    if issues:
+        console.print("[red]Validation failed:[/red]")
+        for issue in issues:
+            console.print(f"  - {issue}")
+        raise typer.Exit(1)
+    console.print("[green]Eval definition is valid.[/green]")
+
+
+@evals_app.command("export")
+def evals_export(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+    format: str = typer.Option("json", "--format", help="Export format: json, toml, or bundle"),
+    out: Path | None = typer.Option(None, "--out", help="Output file or directory"),
+):
+    """Export a local eval dataset into a normalized definition."""
+    definition = load_or_build_definition(path)
+    export_format = format.lower()
+    if out is None:
+        if export_format == "bundle":
+            out = path.parent / f"{path.name}-export"
+        elif export_format == "toml":
+            out = path.parent / "eval.export.toml"
+        else:
+            out = path.parent / "eval.export.json"
+    written = write_definition_export(
+        definition,
+        source_path=path,
+        output_path=out,
+        export_format=export_format,
+    )
+    console.print(f"[green]Exported eval definition to: {written}[/green]")
+
+
 schema_app = typer.Typer(no_args_is_help=True)
 app.add_typer(schema_app, name="schema")
 
@@ -1114,42 +1264,12 @@ def tasks_create(
     output_dir: Path = typer.Option(Path("."), "-o", "--output-dir", help="Directory to create task in"),
 ):
     """Scaffold a new task bundle with default structure."""
-    task_dir = output_dir / name
+    output_base = _resolve_dataset_task_output_dir(output_dir.resolve())
+    task_dir = output_base / name
     if task_dir.exists():
         console.print(f"[red]Error: Directory '{task_dir}' already exists[/red]")
         raise typer.Exit(1)
-
-    task_dir.mkdir(parents=True)
-    (task_dir / "environment").mkdir()
-    (task_dir / "tests").mkdir()
-
-    (task_dir / "instruction.md").write_text(
-        f"# {name}\n\nDescribe the task instructions here.\n",
-        encoding="utf-8",
-    )
-
-    (task_dir / "task.toml").write_text(
-        f'id = "{name}"\n'
-        f'timeout_seconds = 300\n\n'
-        f'[input]\n\n'
-        f'[metadata]\n'
-        f'difficulty = "medium"\n'
-        f'tags = []\n\n'
-        f'[environment]\n'
-        f'type = "container"\n'
-        f'allow_internet = true\n',
-        encoding="utf-8",
-    )
-
-    (task_dir / "environment" / "Dockerfile").write_text(
-        "FROM python:3.11-slim\n\nWORKDIR /workspace\n\n# Add dependencies here\n",
-        encoding="utf-8",
-    )
-
-    (task_dir / "tests" / "test.sh").write_text(
-        '#!/bin/bash\nset -e\n\n# Add verification logic here\n# Exit 0 for pass, non-zero for fail\n\nexit 0\n',
-        encoding="utf-8",
-    )
+    _scaffold_task_bundle(task_dir, task_name=name)
 
     console.print(f"[green]Created task scaffold at: {task_dir}[/green]")
     console.print("Files created:")

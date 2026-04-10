@@ -136,6 +136,9 @@ def load_task_bundles(tasks_dir: Path) -> list[TaskBundle]:
     tasks_dir = tasks_dir.resolve()
     if (tasks_dir / "task.toml").exists():
         return [load_task_bundle(tasks_dir)]
+    nested_tasks_dir = tasks_dir / "tasks"
+    if nested_tasks_dir.exists() and nested_tasks_dir.is_dir():
+        tasks_dir = nested_tasks_dir
 
     bundles: list[TaskBundle] = []
     for child in sorted([p for p in tasks_dir.iterdir() if p.is_dir()]):
