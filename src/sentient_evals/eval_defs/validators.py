@@ -50,4 +50,10 @@ def validate_definition(definition: UnifiedEvalDefinition, *, base_dir: Path | N
             if missing:
                 issues.append(f"Verifier evaluator requires test_script for embedded tasks: {', '.join(missing)}")
 
+    if definition.dataset.kind in {"connector_snapshot", "connector_live", "trace_query"}:
+        if not definition.embedded_tasks:
+            issues.append(
+                f"{definition.dataset.kind} definitions must include materialized embedded_tasks before execution/export"
+            )
+
     return issues

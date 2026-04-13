@@ -67,3 +67,4 @@ class UnifiedEvalDefinition(BaseModel):
     embedded_tasks: list[EmbeddedTaskDefinition] = Field(default_factory=list)
     execution: EvalDefinitionExecution = Field(default_factory=EvalDefinitionExecution)
     provenance: EvalDefinitionProvenance = Field(default_factory=EvalDefinitionProvenance)
+    sentient: dict[str, Any] = Field(default_factory=dict)

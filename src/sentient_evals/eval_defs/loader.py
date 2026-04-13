@@ -63,6 +63,25 @@ def _normalize_loaded_definition(raw: dict[str, Any]) -> dict[str, Any]:
     provenance = raw.get("provenance")
     if isinstance(provenance, dict) and isinstance(provenance.get("connector_snapshot_json"), str):
         provenance["connector_snapshot"] = json.loads(provenance.pop("connector_snapshot_json"))
+
+    embedded_tasks = raw.get("embedded_tasks")
+    if isinstance(embedded_tasks, list):
+        for task in embedded_tasks:
+            if not isinstance(task, dict):
+                continue
+            for field_name in ("task_config", "environment_spec", "metadata"):
+                json_key = f"{field_name}_json"
+                if isinstance(task.get(json_key), str):
+                    task[field_name] = json.loads(task.pop(json_key))
+
+    sentient = raw.get("sentient")
+    if isinstance(sentient, dict):
+        for key in list(sentient.keys()):
+            if not key.endswith("_json"):
+                continue
+            base_key = key[:-5]
+            if isinstance(sentient.get(key), str):
+                sentient[base_key] = json.loads(sentient.pop(key))
     return raw
 
 

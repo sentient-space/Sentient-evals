@@ -16,8 +16,7 @@ def _format_scalar(value: Any) -> str:
         return '""'
     if isinstance(value, (int, float)):
         return str(value)
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return json.dumps(str(value))
 
 
 def definition_to_toml(definition: UnifiedEvalDefinition) -> str:
@@ -85,6 +84,38 @@ def definition_to_toml(definition: UnifiedEvalDefinition) -> str:
             "connector_snapshot_json = "
             + _format_scalar(json.dumps(definition.provenance.connector_snapshot, sort_keys=True))
         )
+
+    for task in definition.embedded_tasks:
+        lines.extend(["", "[[embedded_tasks]]"])
+        lines.append(f"id = {_format_scalar(task.id)}")
+        lines.append(f"name = {_format_scalar(task.name)}")
+        lines.append(f"instruction = {_format_scalar(task.instruction)}")
+        if task.expected_output is not None:
+            lines.append(f"expected_output = {_format_scalar(task.expected_output)}")
+        if task.timeout_seconds is not None:
+            lines.append(f"timeout_seconds = {_format_scalar(task.timeout_seconds)}")
+        if task.test_script is not None:
+            lines.append(f"test_script = {_format_scalar(task.test_script)}")
+        lines.append(
+            "tags = [" + ", ".join(_format_scalar(tag) for tag in task.tags) + "]"
+        )
+        if task.task_config:
+            lines.append(f"task_config_json = {_format_scalar(json.dumps(task.task_config, sort_keys=True))}")
+        if task.environment_spec:
+            lines.append(
+                "environment_spec_json = "
+                + _format_scalar(json.dumps(task.environment_spec, sort_keys=True))
+            )
+        if task.metadata:
+            lines.append(f"metadata_json = {_format_scalar(json.dumps(task.metadata, sort_keys=True))}")
+
+    if definition.sentient:
+        lines.extend(["", "[sentient]"])
+        for key, value in definition.sentient.items():
+            if isinstance(value, (dict, list)):
+                lines.append(f"{key}_json = {_format_scalar(json.dumps(value, sort_keys=True))}")
+            else:
+                lines.append(f"{key} = {_format_scalar(value)}")
 
     return "\n".join(lines) + "\n"
 

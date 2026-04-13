@@ -4,7 +4,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from sentient_evals.cli import app
-from sentient_evals.eval_defs import load_or_build_definition, validate_definition
+from sentient_evals.eval_defs import definition_to_toml, load_eval_definition, load_or_build_definition, validate_definition
 from sentient_evals.task_bundles import load_task_bundles
 
 
@@ -107,3 +107,26 @@ def test_cli_evals_export_json(tmp_path: Path):
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["dataset"]["kind"] == "task_bundles"
     assert payload["embedded_tasks"][0]["id"] == "starter_task"
+
+
+def test_definition_toml_roundtrip_preserves_embedded_tasks_and_sentient_metadata(tmp_path: Path):
+    root = tmp_path / "demo"
+    task_dir = root / "tasks" / "sample"
+    _write_task(task_dir)
+
+    definition = load_or_build_definition(root)
+    definition.sentient = {
+        "source_suite_id": "suite-123",
+        "criteria_templates": [{"id": "crit-1", "name": "Correctness"}],
+    }
+    definition.embedded_tasks[0].expected_output = "42"
+    definition.embedded_tasks[0].metadata["origin"] = "generated"
+
+    out = tmp_path / "eval.toml"
+    out.write_text(definition_to_toml(definition), encoding="utf-8")
+
+    loaded = load_eval_definition(out)
+    assert loaded.sentient["source_suite_id"] == "suite-123"
+    assert loaded.sentient["criteria_templates"][0]["id"] == "crit-1"
+    assert loaded.embedded_tasks[0].expected_output == "42"
+    assert loaded.embedded_tasks[0].metadata["origin"] == "generated"
