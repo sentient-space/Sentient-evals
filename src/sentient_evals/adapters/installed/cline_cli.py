@@ -4,10 +4,19 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
+from .parsers.structured_streams import parse_cline_json_stream
 
 
 class ClineCliAdapter(BaseInstalledAdapter):
     name = "cline-cli"
+    capabilities = AdapterCapabilities(
+        capture_mode="native_json",
+        tool_call_support="best_effort",
+        metrics_support="none",
+        trajectory_confidence="normalized",
+        notes="Uses Cline --json output; tool calls are best-effort because Cline JSON exposes message/tool text.",
+    )
 
     @property
     def install_template_path(self) -> Path:
@@ -68,7 +77,7 @@ class ClineCliAdapter(BaseInstalledAdapter):
                 '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && '
                 "nvm use 22 && "
                 f"{auth_cmd} && "
-                f"cline -F plain -o {escaped_instruction} 2>&1 | tee /logs/agent/cline.txt; "
+                f"cline -y --json {escaped_instruction} 2>&1 | tee /logs/agent/cline.txt; "
                 "EXIT_CODE=$?; "
                 "cline instance kill -a || true; "
                 "exit $EXIT_CODE"
@@ -76,3 +85,18 @@ class ClineCliAdapter(BaseInstalledAdapter):
             env=env,
         )
         return [setup_config_cmd, run_cmd]
+
+    async def parse_run_artifacts(self, *, task, instruction: str, results, artifacts):
+        trial_dir = artifacts.base_dir
+        agent_logs = trial_dir / "env_logs" / "agent"
+        parsed = parse_cline_json_stream(agent_logs, instruction=instruction)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name="cline-json",
+            raw_artifacts=["agent/cline.txt"],
+        )

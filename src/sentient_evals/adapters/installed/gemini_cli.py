@@ -4,12 +4,21 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
 from .parsers.gemini_cli import parse_gemini_trajectory
+from .parsers.structured_streams import parse_gemini_stream
 from ...models import TranscriptEvent
 
 
 class GeminiCliAdapter(BaseInstalledAdapter):
     name = "gemini-cli"
+    capabilities = AdapterCapabilities(
+        capture_mode="native_stream_json",
+        tool_call_support="best_effort",
+        metrics_support="best_effort",
+        trajectory_confidence="normalized",
+        notes="Uses documented Gemini CLI stream-json output, with copied session trajectory as fallback.",
+    )
 
     @property
     def install_template_path(self) -> Path:
@@ -35,7 +44,7 @@ class GeminiCliAdapter(BaseInstalledAdapter):
         return [
             ExecCommand(
                 cmd=(
-                    f"gemini -p {escaped_instruction} -y -m {model} "
+                    f"gemini -p {escaped_instruction} -y -m {model} --output-format stream-json "
                     "2>&1 </dev/null | tee /logs/agent/gemini-cli.txt"
                 ),
                 env=env,
@@ -60,16 +69,20 @@ class GeminiCliAdapter(BaseInstalledAdapter):
     ) -> list[TranscriptEvent]:
         trial_dir = artifacts.base_dir
         agent_logs = trial_dir / "env_logs" / "agent"
-        parsed = parse_gemini_trajectory(agent_logs, instruction=instruction)
+        parsed = parse_gemini_stream(agent_logs, instruction=instruction)
+        parser_name = "gemini-stream"
+        raw_artifacts = ["agent/gemini-cli.txt"]
+        if parsed is None:
+            parsed = parse_gemini_trajectory(agent_logs, instruction=instruction)
+            parser_name = "gemini-session-trajectory"
+            raw_artifacts = ["agent/gemini-cli.trajectory.json"]
         if parsed is None:
             return await super().parse_run_artifacts(
                 task=task, instruction=instruction, results=results, artifacts=artifacts
             )
-        parsed_dir = artifacts.agent().scoped("parsed")
-        parsed_dir.write_json("metrics.json", parsed.metrics)
-        if parsed.extra:
-            parsed_dir.write_json("extra.json", parsed.extra)
-        out = list(parsed.events)
-        if parsed.metrics and not any(event.metrics for event in out):
-            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
-        return out
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name=parser_name,
+            raw_artifacts=raw_artifacts,
+        )

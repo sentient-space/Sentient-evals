@@ -3,10 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
+from .parsers.structured_streams import parse_goose_stream
 
 
 class GooseAdapter(BaseInstalledAdapter):
     name = "goose"
+    capabilities = AdapterCapabilities(
+        capture_mode="native_stream_json",
+        tool_call_support="best_effort",
+        metrics_support="best_effort",
+        trajectory_confidence="normalized",
+        notes="Runs goose with stream-json output and parses message/toolRequest/toolResponse events.",
+    )
 
     @property
     def install_template_path(self) -> Path:
@@ -75,8 +84,24 @@ class GooseAdapter(BaseInstalledAdapter):
                 cmd=(
                     'export PATH="/root/.local/bin:$PATH" && '
                     "goose run --recipe ~/sentient-evals-recipe.yaml "
+                    "--output-format stream-json "
                     "2>&1 | tee /logs/agent/goose.txt"
                 ),
                 env=env,
             ),
         ]
+
+    async def parse_run_artifacts(self, *, task, instruction: str, results, artifacts):
+        trial_dir = artifacts.base_dir
+        agent_logs = trial_dir / "env_logs" / "agent"
+        parsed = parse_goose_stream(agent_logs, instruction=instruction, model_name=self.model_name)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name="goose-stream",
+            raw_artifacts=["agent/goose.txt"],
+        )

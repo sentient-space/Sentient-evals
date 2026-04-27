@@ -4,12 +4,20 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
 from .parsers.cursor_cli import parse_cursor_cli_stream
 from ...models import TranscriptEvent
 
 
 class CursorCliAdapter(BaseInstalledAdapter):
     name = "cursor-cli"
+    capabilities = AdapterCapabilities(
+        capture_mode="native_stream_json",
+        tool_call_support="guaranteed",
+        metrics_support="best_effort",
+        trajectory_confidence="normalized",
+        notes="Uses cursor-agent --print --output-format stream-json and parses documented NDJSON events.",
+    )
 
     @property
     def install_template_path(self) -> Path:
@@ -60,11 +68,9 @@ class CursorCliAdapter(BaseInstalledAdapter):
             return await super().parse_run_artifacts(
                 task=task, instruction=instruction, results=results, artifacts=artifacts
             )
-        parsed_dir = artifacts.agent().scoped("parsed")
-        parsed_dir.write_json("metrics.json", parsed.metrics)
-        if parsed.extra:
-            parsed_dir.write_json("extra.json", parsed.extra)
-        out = list(parsed.events)
-        if parsed.metrics and not any(event.metrics for event in out):
-            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
-        return out
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name="cursor-cli-stream",
+            raw_artifacts=["agent/cursor-cli.txt"],
+        )
