@@ -177,7 +177,7 @@ async def test_e2b_provider_create_and_exec(monkeypatch):
     assert _FakeSandboxClass.last_kwargs["allow_internet_access"] is False
     assert _FakeSandboxClass.last_kwargs["api_key"] == "test-key-123"
     assert _FakeSandboxClass.last_kwargs["timeout"] == 3_600
-    assert _FakeSandboxClass.last_kwargs["ram_mb"] == 4096
+    assert _FakeSandboxClass.last_kwargs["metadata"]["memory_mb"] == "4096"
 
     result = await provider.exec(sandbox, "echo hello", cwd="/workspace", timeout_s=5)
     assert result.exit_code == 0
