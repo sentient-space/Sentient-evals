@@ -7,8 +7,10 @@ from .deterministic import (
     StaticAnalysisSpec,
     ToolUsageGrader,
     ToolUsageRule,
+    TranscriptGrader,
     VerifierScriptGrader,
     VerifierScriptSpec,
+    build_transcript_grader,
 )
 from .human import HumanReviewGrader, HumanReviewSpec
 from .judge import (
@@ -31,8 +33,10 @@ __all__ = [
     "StaticAnalysisSpec",
     "ToolUsageGrader",
     "ToolUsageRule",
+    "TranscriptGrader",
     "VerifierScriptGrader",
     "VerifierScriptSpec",
+    "build_transcript_grader",
     "HumanReviewGrader",
     "HumanReviewSpec",
     "LLMJudgeConfig",

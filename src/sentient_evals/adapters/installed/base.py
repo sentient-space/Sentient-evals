@@ -10,6 +10,8 @@ from typing import Any, Sequence
 
 from jinja2 import Environment, StrictUndefined
 
+from .capabilities import AdapterCapabilities, STDOUT_ONLY_CAPABILITIES
+from .parsers.common import ParseResult
 from ...artifacts import TrialArtifacts
 from ...env import ExecResult, ToolExecutor
 from ...models import Outcome, Task, TranscriptEvent
@@ -31,6 +33,7 @@ def _render_template(template: str, variables: dict[str, str | None]) -> str:
 
 class BaseInstalledAdapter:
     name = "installed_base"
+    capabilities: AdapterCapabilities = STDOUT_ONLY_CAPABILITIES
     version: str | None = None
     model_name: str | None = None
     install_timeout_s: float | None = None
@@ -99,7 +102,85 @@ class BaseInstalledAdapter:
             TranscriptEvent(kind="message", role="user", content=instruction),
             TranscriptEvent(kind="message", role="assistant", content=output.strip()),
         ]
+        self._write_parse_diagnostics(
+            artifacts,
+            parser_status="fallback_stdout",
+            parser_name=f"{self.name}:stdout",
+            events=transcript,
+            raw_artifacts=[],
+            extra={"reason": "no structured parser succeeded"},
+        )
         return transcript
+
+    def _append_metrics_event(self, parsed: ParseResult) -> list[TranscriptEvent]:
+        out = list(parsed.events)
+        if parsed.metrics and not any(event.metrics for event in out):
+            out.append(
+                TranscriptEvent(
+                    kind="metric",
+                    role="system",
+                    content="metrics",
+                    metrics=parsed.metrics,
+                )
+            )
+        return out
+
+    def _write_parse_diagnostics(
+        self,
+        artifacts: TrialArtifacts,
+        *,
+        parser_status: str,
+        parser_name: str,
+        events: Sequence[TranscriptEvent],
+        raw_artifacts: Sequence[str],
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        tool_call_count = sum(1 for event in events if event.tool_call is not None)
+        message_count = sum(1 for event in events if event.kind == "message")
+        metric_count = sum(1 for event in events if event.metrics)
+        diagnostics: dict[str, Any] = {
+            "adapter": self.name,
+            "parser": parser_name,
+            "parser_status": parser_status,
+            "capabilities": self.capabilities.to_dict(),
+            "event_count": len(events),
+            "message_count": message_count,
+            "tool_call_count": tool_call_count,
+            "metric_event_count": metric_count,
+            "raw_artifacts": list(raw_artifacts),
+        }
+        if tool_call_count == 0 and self.capabilities.tool_call_support != "none":
+            diagnostics["tool_call_observation"] = "no tool calls emitted by parser for this run"
+        if self.capabilities.tool_call_support == "none":
+            diagnostics["tool_call_observation"] = "adapter does not expose structured tool calls"
+        if extra:
+            diagnostics["extra"] = extra
+        artifacts.agent().scoped("parsed").write_json("diagnostics.json", diagnostics)
+
+    def _events_from_parse_result(
+        self,
+        artifacts: TrialArtifacts,
+        parsed: ParseResult,
+        *,
+        parser_name: str,
+        raw_artifacts: Sequence[str],
+    ) -> list[TranscriptEvent]:
+        parsed_dir = artifacts.agent().scoped("parsed")
+        parsed_dir.write_json("metrics.json", parsed.metrics)
+        if parsed.tool_definitions is not None:
+            parsed_dir.write_json("tool_definitions.json", parsed.tool_definitions)
+        if parsed.extra:
+            parsed_dir.write_json("extra.json", parsed.extra)
+        out = self._append_metrics_event(parsed)
+        self._write_parse_diagnostics(
+            artifacts,
+            parser_status="parsed",
+            parser_name=parser_name,
+            events=out,
+            raw_artifacts=raw_artifacts,
+            extra=parsed.extra,
+        )
+        return out
 
     async def _sync_logs_for_parsing(self, env: ToolExecutor) -> None:
         sync_logs = getattr(env, "sync_logs", None)

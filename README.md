@@ -31,6 +31,24 @@ sentient-evals --help
 sentient-evals run --help
 ```
 
+### Eval definitions
+
+`sentient-evals` supports a thin `eval.toml` definition layer above Harbor-style task bundles.
+The intended model is:
+
+- task bundles remain the executable ground truth
+- `eval.toml` adds pack-level metadata, evaluator config, and target compatibility
+- exports preserve embedded task definitions and platform metadata for round-tripping
+
+Useful commands:
+
+```bash
+sentient-evals init demo-eval
+sentient-evals evals validate ./demo-eval
+sentient-evals evals export ./demo-eval --format toml
+sentient-evals evals export ./demo-eval --format json
+```
+
 ### Installed CLI agents (Harbor-style)
 
 Built-in installed adapters (run via `--adapter <name>`) mirror Harbor's CLI agents:

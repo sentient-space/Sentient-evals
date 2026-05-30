@@ -4,12 +4,20 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
 from .parsers.claude_code import parse_claude_code_session
 from ...models import TranscriptEvent
 
 
 class ClaudeCodeAdapter(BaseInstalledAdapter):
     name = "claude-code"
+    capabilities = AdapterCapabilities(
+        capture_mode="session_jsonl",
+        tool_call_support="best_effort",
+        metrics_support="best_effort",
+        trajectory_confidence="normalized",
+        notes="Runs Claude Code with stream-json and parses the persisted session JSONL.",
+    )
 
     ALLOWED_TOOLS = [
         "Bash",
@@ -106,13 +114,9 @@ class ClaudeCodeAdapter(BaseInstalledAdapter):
             return await super().parse_run_artifacts(
                 task=task, instruction=instruction, results=results, artifacts=artifacts
             )
-        parsed_dir = artifacts.agent().scoped("parsed")
-        parsed_dir.write_json("metrics.json", parsed.metrics)
-        if parsed.tool_definitions is not None:
-            parsed_dir.write_json("tool_definitions.json", parsed.tool_definitions)
-        if parsed.extra:
-            parsed_dir.write_json("extra.json", parsed.extra)
-        out = list(parsed.events)
-        if parsed.metrics and not any(event.metrics for event in out):
-            out.append(TranscriptEvent(kind="metric", role="system", content="metrics", metrics=parsed.metrics))
-        return out
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name="claude-code-session",
+            raw_artifacts=["agent/claude-code.txt", "agent/sessions/projects/**/*.jsonl"],
+        )

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 from ...artifacts import TrialArtifacts
-from ...judges import DirectJudgeClient, JudgeClient
+from ...judges import DirectJudgeClient, JudgeClient, parse_judge_response
 from ...models import GraderResult, Severity, Task, TranscriptEvent
 
 
@@ -92,18 +91,16 @@ class PairwiseJudgeGrader:
 
         artifacts.judge().write_json("response.json", resp.raw)
 
-        verdict = "unknown"
-        score = 0.0
-        reason = ""
         try:
-            payload = json.loads(resp.content)
-            verdict = str(payload.get("verdict", "unknown")).lower()
-            score = float(payload.get("score", 0.0))
-            reason = str(payload.get("reason", ""))
-        except Exception:
+            parsed = parse_judge_response(resp.content, score_scale="0-1")
+            verdict = parsed.verdict
+            score = parsed.normalized_score
+            reason = parsed.reason
+        except Exception as exc:
             verdict = "unknown"
             score = 0.0
             reason = "Failed to parse judge response"
+            artifacts.judge().write_json("parse_error.json", {"error": str(exc), "content": resp.content[:2000]})
 
         passed = verdict == "candidate"
         severity = Severity.info if passed else Severity.error

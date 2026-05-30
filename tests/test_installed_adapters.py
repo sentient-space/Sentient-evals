@@ -1,10 +1,16 @@
 import asyncio
+import json
 from pathlib import Path
 
 from sentient_evals.adapters.installed.aider import AiderAdapter
 from sentient_evals.adapters.installed.base import BaseInstalledAdapter, ExecCommand
+from sentient_evals.adapters.installed.cline_cli import ClineCliAdapter
 from sentient_evals.adapters.installed.codex import CodexAdapter
 from sentient_evals.adapters.installed.cursor_cli import CursorCliAdapter
+from sentient_evals.adapters.installed.gemini_cli import GeminiCliAdapter
+from sentient_evals.adapters.installed.goose import GooseAdapter
+from sentient_evals.adapters.installed.opencode import OpenCodeAdapter
+from sentient_evals.adapters.installed.qwen_code import QwenCodeAdapter
 from sentient_evals.artifacts import TrialArtifacts
 from sentient_evals.env import ExecResult
 from sentient_evals.models import Outcome, Task, TranscriptEvent
@@ -96,6 +102,9 @@ def test_installed_adapter_run_writes_artifacts(tmp_path: Path):
     assert isinstance(transcript, list)
     assert (tmp_path / "agent" / "install.sh").exists()
     assert (tmp_path / "agent" / "commands" / "0" / "stdout.txt").exists()
+    diagnostics = json.loads((tmp_path / "agent" / "parsed" / "diagnostics.json").read_text())
+    assert diagnostics["parser_status"] == "fallback_stdout"
+    assert diagnostics["capabilities"]["tool_call_support"] == "none"
 
 
 def test_installed_adapter_env_overrides_do_not_require_process_env(tmp_path: Path):
@@ -112,6 +121,30 @@ def test_cursor_cli_uses_stream_json_output(tmp_path: Path):
     assert commands
     assert "--output-format stream-json" in commands[0].cmd
     assert commands[0].env == {"CURSOR_API_KEY": "cursor-test-key"}
+
+
+def test_weak_adapters_use_structured_output_flags(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    gemini = GeminiCliAdapter(model_name="google/gemini-2.5-pro")
+    assert "--output-format stream-json" in gemini.create_run_commands("solve", task=Task(id="t1"), seed=1)[0].cmd
+
+    qwen = QwenCodeAdapter(model_name="qwen3-coder-plus")
+    assert "--output-format stream-json" in qwen.create_run_commands("solve", task=Task(id="t1"), seed=1)[0].cmd
+
+    cline = ClineCliAdapter(model_name="anthropic:claude-sonnet-4-5")
+    cline_commands = cline.create_run_commands("solve", task=Task(id="t1"), seed=1)
+    assert "--json" in cline_commands[1].cmd
+    assert "-F plain" not in cline_commands[1].cmd
+
+    opencode = OpenCodeAdapter(model_name="anthropic/claude-sonnet-4-5")
+    assert "--format=json" in opencode.create_run_commands("solve", task=Task(id="t1"), seed=1)[0].cmd
+
+    goose = GooseAdapter(model_name="anthropic/claude-sonnet-4-5")
+    goose_commands = goose.create_run_commands("solve", task=Task(id="t1"), seed=1)
+    assert "--output-format stream-json" in goose_commands[1].cmd
 
 
 def test_codex_uses_tmp_home_and_exports_sessions(tmp_path: Path):

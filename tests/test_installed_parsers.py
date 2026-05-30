@@ -7,6 +7,13 @@ from sentient_evals.adapters.installed.parsers.cursor_cli import parse_cursor_cl
 from sentient_evals.adapters.installed.parsers.gemini_cli import parse_gemini_trajectory
 from sentient_evals.adapters.installed.parsers.mini_swe_agent import parse_mini_swe_agent_trajectory
 from sentient_evals.adapters.installed.parsers.openhands import parse_openhands_session
+from sentient_evals.adapters.installed.parsers.structured_streams import (
+    parse_cline_json_stream,
+    parse_gemini_stream,
+    parse_goose_stream,
+    parse_opencode_json_stream,
+    parse_qwen_code_stream,
+)
 from sentient_evals.adapters.installed.parsers.swe_agent import parse_swe_agent_traj
 
 
@@ -456,6 +463,119 @@ def test_parse_gemini_trajectory(tmp_path: Path):
     parsed = parse_gemini_trajectory(tmp_path, instruction="do")
     assert parsed is not None
     assert any(e.kind == "tool_call" and e.tool_call and e.tool_call.id == "t1" for e in parsed.events)
+
+
+def test_parse_gemini_stream_json(tmp_path: Path):
+    (tmp_path / "gemini-cli.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "I will inspect."}]}}),
+                json.dumps({"type": "tool_use", "id": "g1", "name": "read_file", "input": {"path": "README.md"}}),
+                json.dumps({"type": "tool_result", "tool_use_id": "g1", "content": "contents"}),
+                json.dumps({"type": "result", "usage": {"inputTokens": 10, "outputTokens": 3}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_gemini_stream(tmp_path, instruction="do")
+    assert parsed is not None
+    tool_calls = [e for e in parsed.events if e.tool_call]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call.name == "read_file"
+    assert tool_calls[0].observation == "contents"
+    assert parsed.metrics["prompt_tokens"] == 10.0
+
+
+def test_parse_qwen_code_stream_json(tmp_path: Path):
+    (tmp_path / "qwen-code.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "session_start", "session_id": "s1", "model": "qwen3-coder-plus"}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "Reading file."},
+                                {"type": "tool_use", "id": "q1", "name": "read_file", "input": {"path": "a.txt"}},
+                            ],
+                            "usage": {"inputTokens": 6, "outputTokens": 2},
+                        },
+                    }
+                ),
+                json.dumps({"type": "tool_result", "message": {"parts": [{"functionResponse": {"id": "q1", "response": {"output": "ok"}}}]}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_qwen_code_stream(tmp_path, instruction="do")
+    assert parsed is not None
+    tool_calls = [e for e in parsed.events if e.tool_call]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call.id == "q1"
+    assert tool_calls[0].observation == "ok"
+    assert parsed.metrics["prompt_tokens"] == 6.0
+
+
+def test_parse_cline_json_stream(tmp_path: Path):
+    (tmp_path / "cline.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "say", "say": "text", "text": "I will fix it.", "ts": 1760501486669}),
+                json.dumps({"type": "say", "say": "tool", "text": "Running npm test", "ts": 1760501487669}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_cline_json_stream(tmp_path, instruction="do")
+    assert parsed is not None
+    assert any(e.kind == "message" and e.role == "assistant" for e in parsed.events)
+    assert any(e.tool_call and e.tool_call.name == "npm" for e in parsed.events)
+
+
+def test_parse_opencode_json_stream(tmp_path: Path):
+    (tmp_path / "opencode.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "text", "timestamp": 1700000001000, "sessionID": "s1", "part": {"type": "text", "messageID": "m1", "text": "Creating file."}}),
+                json.dumps({"type": "tool_use", "timestamp": 1700000002000, "sessionID": "s1", "part": {"type": "tool", "messageID": "m1", "callID": "o1", "tool": "write", "state": {"status": "completed", "input": {"filePath": "a.txt"}, "output": "done"}}}),
+                json.dumps({"type": "step_finish", "sessionID": "s1", "part": {"type": "step-finish", "cost": 0.01, "tokens": {"input": 4, "output": 5, "cache": {"read": 2}}}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_opencode_json_stream(tmp_path, instruction="do")
+    assert parsed is not None
+    tool_calls = [e for e in parsed.events if e.tool_call]
+    assert tool_calls[0].tool_call.id == "o1"
+    assert tool_calls[0].observation == "done"
+    assert parsed.metrics["prompt_tokens"] == 6.0
+    assert parsed.metrics["cost_usd"] == 0.01
+
+
+def test_parse_goose_stream_json(tmp_path: Path):
+    (tmp_path / "goose.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "message", "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "Checking."}, {"type": "toolRequest", "id": "g1", "toolCall": {"value": {"name": "developer__shell", "arguments": {"cmd": "ls"}}}}]}}),
+                json.dumps({"type": "message", "message": {"id": "m2", "role": "user", "content": [{"type": "toolResponse", "id": "g1", "toolResult": {"value": {"content": [{"type": "text", "text": "ok"}]}}}]}}),
+                json.dumps({"type": "complete", "total_tokens": 12}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_goose_stream(tmp_path, instruction="do")
+    assert parsed is not None
+    tool_calls = [e for e in parsed.events if e.tool_call]
+    assert tool_calls[0].tool_call.name == "developer__shell"
+    assert "ok" in (tool_calls[0].observation or "")
+    assert parsed.metrics["total_tokens"] == 12.0
 
 
 def test_final_metrics_populated_from_transcript(tmp_path: Path):

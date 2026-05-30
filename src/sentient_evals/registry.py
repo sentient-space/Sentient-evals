@@ -36,6 +36,7 @@ from .graders import (
     ToolUsageRule,
     VerifierScriptGrader,
     VerifierScriptSpec,
+    build_transcript_grader,
 )
 
 
@@ -94,6 +95,11 @@ def build_adapter(
 def build_grader(spec: dict[str, Any]) -> Any:
     t = str(spec.get("type", "")).strip()
     cfg = spec.get("config") or {}
+    # Aliases keep older or platform-side spellings working.
+    if t == "tool_calls":
+        t = "tool_usage"
+    elif t == "llm_rubric":
+        t = "llm_judge"
     if t == "exact_match":
         return ExactMatchGrader(**cfg)
     if t == "state_check":
@@ -110,6 +116,8 @@ def build_grader(spec: dict[str, Any]) -> Any:
     if t == "static_analysis":
         checks = [StaticAnalysisSpec(**c) for c in cfg.get("checks", [])]
         return StaticAnalysisGrader(checks=checks)
+    if t == "transcript":
+        return build_transcript_grader(cfg)
     if t == "verifier_script":
         spec_obj = VerifierScriptSpec(**cfg) if cfg else VerifierScriptSpec()
         return VerifierScriptGrader(spec=spec_obj)

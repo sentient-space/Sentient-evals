@@ -11,7 +11,7 @@ def test_cursor_cli_command_enables_non_interactive_flags(monkeypatch):
     cmd = commands[0].cmd
 
     assert "--print" in cmd
-    assert "--output-format text" in cmd
+    assert "--output-format stream-json" in cmd
     assert "AGENT_HELP" in cmd
     assert "--force" in cmd
     assert "--trust" in cmd

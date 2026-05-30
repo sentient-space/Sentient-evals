@@ -139,3 +139,34 @@ def test_llm_judge_grader_supports_injected_client_without_env(tmp_path: Path, m
         )
     )
     assert result.passed is True
+
+
+def test_llm_judge_grader_normalizes_scaled_score_and_fenced_response(tmp_path: Path, monkeypatch):
+    class _ScaledJudgeClient:
+        async def score(self, *, model: str, prompt: str, max_tokens: int, temperature: float) -> JudgeResponse:
+            assert "score (1 to 5)" in prompt
+            return JudgeResponse(
+                content='```json\n{"verdict":"pass","score":4,"reason":"good"}\n```',
+                raw={"model": model},
+            )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    grader = LLMJudgeGrader(
+        rubric="Check answer",
+        config=LLMJudgeConfig(model="gpt-4o-mini", score_scale="1-5"),
+        client=_ScaledJudgeClient(),
+    )
+
+    result = asyncio.run(
+        grader.grade(
+            task=Task(id="t1"),
+            transcript=[],
+            outcome={"answer": "ok"},
+            artifacts=TrialArtifacts(tmp_path),
+        )
+    )
+
+    assert result.passed is True
+    assert result.score == 0.8
+    assert result.details["raw_score"] == 4
+    assert result.details["score_scale"] == "1-5"

@@ -4,10 +4,19 @@ import shlex
 from pathlib import Path
 
 from .base import BaseInstalledAdapter, ExecCommand
+from .capabilities import AdapterCapabilities
+from .parsers.structured_streams import parse_opencode_json_stream
 
 
 class OpenCodeAdapter(BaseInstalledAdapter):
     name = "opencode"
+    capabilities = AdapterCapabilities(
+        capture_mode="native_json",
+        tool_call_support="best_effort",
+        metrics_support="best_effort",
+        trajectory_confidence="normalized",
+        notes="Runs opencode with raw JSON events and parses text, tool, and step-finish events.",
+    )
 
     @property
     def install_template_path(self) -> Path:
@@ -69,3 +78,18 @@ class OpenCodeAdapter(BaseInstalledAdapter):
                 env=env,
             )
         ]
+
+    async def parse_run_artifacts(self, *, task, instruction: str, results, artifacts):
+        trial_dir = artifacts.base_dir
+        agent_logs = trial_dir / "env_logs" / "agent"
+        parsed = parse_opencode_json_stream(agent_logs, instruction=instruction, model_name=self.model_name)
+        if parsed is None:
+            return await super().parse_run_artifacts(
+                task=task, instruction=instruction, results=results, artifacts=artifacts
+            )
+        return self._events_from_parse_result(
+            artifacts,
+            parsed,
+            parser_name="opencode-json",
+            raw_artifacts=["agent/opencode.txt"],
+        )

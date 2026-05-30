@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 from ...artifacts import TrialArtifacts
-from ...judges import DirectJudgeClient, JudgeClient
+from ...judges import DirectJudgeClient, JudgeClient, parse_judge_response, score_scale_label
 from ...models import GraderResult, Severity, Task, TranscriptEvent
 
 
@@ -16,6 +15,7 @@ class LLMJudgeConfig:
     api_key_env: str = "OPENAI_API_KEY"
     max_tokens: int = 512
     temperature: float = 0.0
+    score_scale: str = "0-1"
 
 
 @dataclass(frozen=True)
@@ -56,13 +56,15 @@ class LLMJudgeGrader:
             answer = str(getattr(outcome, self.answer_field, "") if outcome is not None else "")
         task_input = self._judge_task_input(task, transcript)
 
+        score_scale = self.config.score_scale
         prompt = (
             "You are a strict evaluator.\n\n"
             f"RUBRIC:\n{self.rubric}\n\n"
             f"TASK INPUT:\n{task_input}\n\n"
             + (f"REFERENCE:\n{self.reference}\n\n" if self.reference else "")
             + f"MODEL ANSWER:\n{answer}\n\n"
-            "Return JSON with keys: verdict (pass|fail|unknown), score (0-1), reason (string)."
+            "Return only valid JSON with keys: "
+            f"verdict (pass|fail|unknown), score ({score_scale_label(score_scale)}), reason (string)."
         )
         artifacts.judge().write_text("prompt.txt", prompt)
 
@@ -100,18 +102,18 @@ class LLMJudgeGrader:
 
         artifacts.judge().write_json("response.json", resp.raw)
 
-        verdict = "unknown"
-        score = 0.0
-        reason = ""
         try:
-            payload = json.loads(resp.content)
-            verdict = str(payload.get("verdict", "unknown")).lower()
-            score = float(payload.get("score", 0.0))
-            reason = str(payload.get("reason", ""))
-        except Exception:
+            parsed = parse_judge_response(resp.content, score_scale=score_scale)
+            verdict = parsed.verdict
+            score = parsed.normalized_score
+            raw_score = parsed.score
+            reason = parsed.reason
+        except Exception as exc:
             verdict = "unknown"
             score = 0.0
+            raw_score = 0.0
             reason = "Failed to parse judge response"
+            artifacts.judge().write_json("parse_error.json", {"error": str(exc), "content": resp.content[:2000]})
 
         passed = verdict == "pass"
         artifacts.judge().write_json(
@@ -120,6 +122,8 @@ class LLMJudgeGrader:
                 "verdict": verdict,
                 "passed": passed,
                 "score": score,
+                "raw_score": raw_score,
+                "score_scale": score_scale,
                 "reason": reason,
                 "judge_model": self.config.model,
             },
@@ -136,5 +140,7 @@ class LLMJudgeGrader:
                 "verdict": verdict,
                 "reason": reason,
                 "judge_model": self.config.model,
+                "raw_score": raw_score,
+                "score_scale": score_scale,
             },
         )
